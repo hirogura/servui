@@ -1,0 +1,946 @@
+#!/usr/bin/env python3
+"""
+serv-UI - Web-based Server Management Interface
+A lightweight alternative to Webmin, designed to work with Tailscale serve.
+"""
+
+import asyncio
+import fcntl
+import json
+import os
+import pty
+import pwd
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import threading
+from datetime import datetime
+from pathlib import Path
+
+import psutil
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+IS_ROOT = os.getuid() == 0
+
+app = FastAPI(title="serv-UI", version="1.1.0")
+
+# Static files and templates
+BASE_DIR = Path(__file__).parent
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+
+def _sudo(cmd: str) -> str:
+    """Prefix command with sudo when not running as root."""
+    if IS_ROOT:
+        return cmd
+    return f"sudo {cmd}"
+
+
+# --- Helper: run shell command ---
+async def run_cmd(cmd: str, timeout: int = 30, extra_env: dict | None = None) -> dict:
+    """Run a shell command and return stdout, stderr, returncode."""
+    try:
+        env = os.environ.copy()
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        if extra_env:
+            env.update(extra_env)
+
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return {
+            "stdout": stdout.decode("utf-8", errors="replace"),
+            "stderr": stderr.decode("utf-8", errors="replace"),
+            "returncode": proc.returncode,
+        }
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return {"stdout": "", "stderr": "Command timed out", "returncode": -1}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def get_primary_user() -> tuple[str, str, str]:
+    """
+    Find the primary human user on the system, their home directory and login shell.
+    Returns (username, home_dir, shell).
+    """
+    # 1. Try UID 1000 (standard primary user on Debian/Ubuntu)
+    try:
+        pw = pwd.getpwuid(1000)
+        if pw and pw.pw_name != "nobody" and pw.pw_shell not in ("/bin/false", "/usr/sbin/nologin"):
+            return pw.pw_name, pw.pw_dir, pw.pw_shell or "/bin/bash"
+    except KeyError:
+        pass
+
+    # 2. Search for any UID >= 1000 user in /home
+    for pw in pwd.getpwall():
+        if 1000 <= pw.pw_uid < 65534 and pw.pw_name != "servui":
+            if pw.pw_shell not in ("/bin/false", "/usr/sbin/nologin", "/bin/sync") and pw.pw_dir.startswith("/home/"):
+                return pw.pw_name, pw.pw_dir, pw.pw_shell or "/bin/bash"
+
+    # 3. Fallback to process owner
+    try:
+        pw = pwd.getpwuid(os.getuid())
+        return pw.pw_name, pw.pw_dir, pw.pw_shell or "/bin/bash"
+    except Exception:
+        return "root", "/root", "/bin/bash"
+
+
+
+def get_cpu_temperature() -> float | None:
+    """Get current CPU temperature in Celsius across different hardware platforms."""
+    try:
+        temp_data = psutil.sensors_temperatures()
+        if temp_data:
+            priority_keys = ["coretemp", "cpu_thermal", "k10temp", "zenpower", "soc_thermal", "cpu-thermal"]
+            for key in priority_keys:
+                if key in temp_data and temp_data[key]:
+                    entries = temp_data[key]
+                    for entry in entries:
+                        if entry.label in ("Package id 0", "Tctl", "Tdie", "CPU", "SoC"):
+                            return round(entry.current, 1)
+                    return round(entries[0].current, 1)
+
+            for name, entries in temp_data.items():
+                if ("cpu" in name.lower() or "core" in name.lower() or "temp" in name.lower()) and entries:
+                    return round(entries[0].current, 1)
+
+            for name, entries in temp_data.items():
+                if entries:
+                    return round(entries[0].current, 1)
+    except Exception:
+        pass
+
+    try:
+        thermal_dir = Path("/sys/class/thermal")
+        if thermal_dir.exists():
+            for p in thermal_dir.glob("thermal_zone*"):
+                type_file = p / "type"
+                temp_file = p / "temp"
+                if temp_file.exists():
+                    ztype = type_file.read_text().strip().lower() if type_file.exists() else ""
+                    if "cpu" in ztype or "x86_pkg_temp" in ztype or "pkg" in ztype:
+                        val = float(temp_file.read_text().strip()) / 1000.0
+                        return round(val, 1)
+
+            tz0 = thermal_dir / "thermal_zone0" / "temp"
+            if tz0.exists():
+                return round(float(tz0.read_text().strip()) / 1000.0, 1)
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
+# 1. Dashboard - System Information
+# ============================================================
+@app.get("/api/system/info")
+async def system_info():
+    """Get comprehensive system information."""
+    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_freq = psutil.cpu_freq()
+    cpu_count = psutil.cpu_count()
+    load_avg = os.getloadavg()
+    cpu_temp = get_cpu_temperature()
+
+    mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    disk = psutil.disk_usage("/")
+
+    boot_time = datetime.fromtimestamp(psutil.boot_time())
+    uptime = datetime.now() - boot_time
+
+    # Network I/O
+    net = psutil.net_io_counters()
+
+    # Temperature (if available)
+    temps = {}
+    try:
+        temp_data = psutil.sensors_temperatures()
+        if temp_data:
+            for name, entries in temp_data.items():
+                if entries:
+                    temps[name] = entries[0].current
+    except (AttributeError, Exception):
+        pass
+
+    # Get hostname
+    hostname_result = await run_cmd("hostname")
+    hostname = hostname_result["stdout"].strip()
+
+    # Get OS info
+    os_info = await run_cmd("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'\"' -f2")
+    os_name = os_info["stdout"].strip() or "Unknown"
+
+    # Get kernel
+    kernel_result = await run_cmd("uname -r")
+    kernel = kernel_result["stdout"].strip()
+
+    return {
+        "hostname": hostname,
+        "os": os_name,
+        "kernel": kernel,
+        "uptime_seconds": int(uptime.total_seconds()),
+        "boot_time": boot_time.isoformat(),
+        "cpu": {
+            "percent": cpu_percent,
+            "count_physical": cpu_count,
+            "freq_current": round(cpu_freq.current, 0) if cpu_freq else None,
+            "temp": cpu_temp,
+            "load_avg": {
+                "1min": round(load_avg[0], 2),
+                "5min": round(load_avg[1], 2),
+                "15min": round(load_avg[2], 2),
+            },
+        },
+        "memory": {
+            "total": mem.total,
+            "available": mem.available,
+            "used": mem.used,
+            "percent": mem.percent,
+            "swap_total": swap.total,
+            "swap_used": swap.used,
+            "swap_percent": swap.percent,
+        },
+        "disk": {
+            "total": disk.total,
+            "used": disk.used,
+            "free": disk.free,
+            "percent": disk.percent,
+        },
+        "network": {
+            "bytes_sent": net.bytes_sent,
+            "bytes_recv": net.bytes_recv,
+            "packets_sent": net.packets_sent,
+            "packets_recv": net.packets_recv,
+        },
+        "temperatures": temps,
+    }
+
+
+@app.get("/api/system/processes")
+async def system_processes():
+    """Get top processes by CPU usage."""
+    procs = []
+    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "username"]):
+        try:
+            info = proc.info
+            procs.append({
+                "pid": info["pid"],
+                "name": info["name"],
+                "cpu": info["cpu_percent"] or 0,
+                "memory": round(info["memory_percent"] or 0, 1),
+                "user": info["username"] or "-",
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    # Sort by CPU desc
+    procs.sort(key=lambda x: x["cpu"], reverse=True)
+    return procs[:30]
+
+
+# ============================================================
+# 2. Service Management
+# ============================================================
+@app.get("/api/services")
+async def list_services():
+    """List installed services with their status."""
+    result = await run_cmd(
+        "systemctl list-units --type=service --all --no-pager --plain --no-legend "
+        "| awk '{print $1, $3, $4}'",
+        timeout=15,
+    )
+    services = []
+    for line in result["stdout"].strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 2:
+            name = parts[0]
+            active = parts[1] if len(parts) > 1 else "unknown"
+            sub = parts[2] if len(parts) > 2 else "-"
+            services.append({"name": name, "active": active, "sub": sub})
+    return services
+
+
+@app.get("/api/services/{service_name}/status")
+async def service_status(service_name: str):
+    """Get detailed status of a specific service."""
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(f"systemctl is-active {service_name}")
+    is_active = result["stdout"].strip()
+    result2 = await run_cmd(f"systemctl status {service_name}")
+    return {
+        "name": service_name,
+        "is_active": is_active,
+        "status_output": result2["stdout"],
+    }
+
+
+@app.post("/api/services/{service_name}/start")
+async def service_start(service_name: str):
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(_sudo(f"systemctl start {service_name}"))
+    return {"success": result["returncode"] == 0, **result}
+
+
+@app.post("/api/services/{service_name}/stop")
+async def service_stop(service_name: str):
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(_sudo(f"systemctl stop {service_name}"))
+    return {"success": result["returncode"] == 0, **result}
+
+
+@app.post("/api/services/{service_name}/restart")
+async def service_restart(service_name: str):
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(_sudo(f"systemctl restart {service_name}"))
+    return {"success": result["returncode"] == 0, **result}
+
+
+@app.post("/api/services/{service_name}/enable")
+async def service_enable(service_name: str):
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(_sudo(f"systemctl enable {service_name}"))
+    return {"success": result["returncode"] == 0, **result}
+
+
+@app.post("/api/services/{service_name}/disable")
+async def service_disable(service_name: str):
+    if not all(c.isalnum() or c in "-_." for c in service_name):
+        raise HTTPException(status_code=400, detail="Invalid service name")
+    result = await run_cmd(_sudo(f"systemctl disable {service_name}"))
+    return {"success": result["returncode"] == 0, **result}
+
+
+# ============================================================
+# 3. Package Management
+# ============================================================
+@app.get("/api/packages/updates")
+async def check_updates():
+    """Check for available package updates."""
+    # Update package lists
+    await run_cmd(_sudo("apt-get update -qq"), timeout=60)
+    result = await run_cmd("apt list --upgradable 2>/dev/null | tail -n +2")
+    packages = []
+    for line in result["stdout"].strip().split("\n"):
+        line = line.strip()
+        if line and "/" in line:
+            name = line.split("/")[0]
+            packages.append({"name": name, "info": line})
+    return {"packages": packages, "count": len(packages)}
+
+
+@app.post("/api/packages/upgrade")
+async def upgrade_packages():
+    """Upgrade all packages safely with dependency auto-repair."""
+    # Step 1: Repair unconfigured packages
+    r_dpkg = await run_cmd(_sudo("dpkg --configure -a"), timeout=120)
+    # Step 2: Auto-fix broken dependencies
+    r_fix = await run_cmd(
+        _sudo("apt-get --fix-broken install -y "
+        "-o Dpkg::Options::='--force-confdef' "
+        "-o Dpkg::Options::='--force-confold'"),
+        timeout=180,
+    )
+    # Step 3: Upgrade packages
+    result = await run_cmd(
+        _sudo("apt-get upgrade -y "
+        "-o Dpkg::Options::='--force-confdef' "
+        "-o Dpkg::Options::='--force-confold'"),
+        timeout=600,
+    )
+    
+    combined_stdout = f"{r_dpkg['stdout']}\n{r_fix['stdout']}\n{result['stdout']}".strip()
+    errors = result["stderr"].strip()
+    if r_fix["returncode"] != 0 and r_fix["stderr"].strip():
+        errors = f"{r_fix['stderr'].strip()}\n{errors}".strip()
+    if r_dpkg["returncode"] != 0 and r_dpkg["stderr"].strip():
+        errors = f"{r_dpkg['stderr'].strip()}\n{errors}".strip()
+
+    return {
+        "success": result["returncode"] == 0,
+        "output": combined_stdout,
+        "errors": errors,
+    }
+
+
+@app.post("/api/packages/upgrade/{package_name}")
+async def upgrade_single_package(package_name: str):
+    """Upgrade a single package."""
+    if not all(c.isalnum() or c in "-_." for c in package_name):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+    # Repair dpkg and dependencies first
+    await run_cmd(_sudo("dpkg --configure -a"), timeout=60)
+    await run_cmd(
+        _sudo("apt-get --fix-broken install -y "
+        "-o Dpkg::Options::='--force-confdef' "
+        "-o Dpkg::Options::='--force-confold'"),
+        timeout=120,
+    )
+    result = await run_cmd(
+        _sudo(f"apt-get install --only-upgrade -y {package_name} "
+        "-o Dpkg::Options::='--force-confdef' "
+        "-o Dpkg::Options::='--force-confold'"),
+        timeout=300,
+    )
+    return {
+        "success": result["returncode"] == 0,
+        "output": result["stdout"],
+        "errors": result["stderr"],
+    }
+
+
+@app.post("/api/packages/fix")
+async def fix_packages():
+    """Repair broken packages and unmet dependencies."""
+    r1 = await run_cmd(_sudo("dpkg --configure -a"), timeout=120)
+    r2 = await run_cmd(
+        _sudo("apt-get --fix-broken install -y "
+        "-o Dpkg::Options::='--force-confdef' "
+        "-o Dpkg::Options::='--force-confold'"),
+        timeout=300,
+    )
+    success = (r2["returncode"] == 0) and (r1["returncode"] == 0)
+    return {
+        "success": success,
+        "output": (r1["stdout"] + "\n" + r2["stdout"]).strip(),
+        "errors": (r1["stderr"] + "\n" + r2["stderr"]).strip(),
+    }
+
+
+
+# ============================================================
+# 4. Web Terminal (WebSocket + PTY)
+# ============================================================
+def _get_user_uid(username: str) -> int:
+    """Get UID for a username from /etc/passwd."""
+    try:
+        pw = pwd.getpwnam(username)
+        return pw.pw_uid
+    except KeyError:
+        return 1000
+
+
+def _build_term_env(target_user: str, target_home: str, target_shell: str) -> dict:
+    """Build environment for terminal process, including keyring/D-Bus vars like selfcode."""
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    env["SHELL"] = target_shell
+    env["USER"] = target_user
+    env["LOGNAME"] = target_user
+    env["HOME"] = target_home
+    env["COLUMNS"] = "120"
+    env["LINES"] = "30"
+
+    # Add keyring / D-Bus environment (same as selfcode)
+    uid = _get_user_uid(target_user)
+    run_user_dir = f"/run/user/{uid}"
+    if os.path.isdir(run_user_dir):
+        env["XDG_RUNTIME_DIR"] = run_user_dir
+        bus_path = os.path.join(run_user_dir, "bus")
+        if os.path.exists(bus_path):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+        keyring_dir = os.path.join(run_user_dir, "keyring")
+        if os.path.isdir(keyring_dir):
+            env["GNOME_KEYRING_CONTROL"] = keyring_dir
+
+    # Add ~/.local/bin to PATH (for CLI tools like agy)
+    local_bin = os.path.join(target_home, ".local", "bin")
+    if os.path.isdir(local_bin):
+        env["PATH"] = f"{local_bin}:{env.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
+
+    return env
+
+
+@app.websocket("/ws/terminal")
+async def websocket_terminal(websocket: WebSocket):
+    """WebSocket-based terminal using PTY for clean terminal emulation.
+    Uses setpriv when running as root (like selfcode), falls back to sudo+su."""
+    await websocket.accept()
+
+    target_user, target_home, target_shell = get_primary_user()
+    is_root = os.getuid() == 0
+    cur_user_name = pwd.getpwuid(os.getuid()).pw_name
+    env = _build_term_env(target_user, target_home, target_shell)
+
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        # Child process: stdin, stdout, and stderr are automatically connected to slave PTY
+        try:
+            cur_uid = os.getuid()
+            cur_user = pwd.getpwuid(cur_uid).pw_name if pwd.getpwuid(cur_uid) else ""
+
+            if cur_uid == 0 and cur_user != target_user:
+                # Running as root: use setpriv for clean user switch (like selfcode)
+                # setpriv replaces the process image directly, so job control works correctly
+                os.execvpe(
+                    "/usr/bin/setpriv",
+                    [
+                        "/usr/bin/setpriv",
+                        f"--reuid={target_user}",
+                        f"--regid={target_user}",
+                        "--init-groups",
+                        "--",
+                        target_shell,
+                        "-l",
+                    ],
+                    env,
+                )
+            elif cur_user != target_user:
+                # Non-root: switch via sudo + su (su is allowed in sudoers)
+                os.execvpe(
+                    "/usr/bin/sudo",
+                    ["/usr/bin/sudo", "/usr/bin/su", "-", target_user],
+                    env,
+                )
+            else:
+                # Already target_user: cd to home directory and launch login shell
+                try:
+                    os.chdir(target_home)
+                except Exception:
+                    pass
+                os.execvpe(target_shell, [target_shell, "-l"], env)
+        except Exception:
+            try:
+                os.chdir(target_home)
+            except Exception:
+                pass
+            os.execlp(target_shell, target_shell, "-l")
+        sys.exit(1)
+
+
+    # Parent process
+    try:
+        winsize = struct.pack("HHHH", 30, 120, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
+
+    loop = asyncio.get_running_loop()
+
+    async def pty_to_ws():
+        try:
+            while True:
+                data = await loop.run_in_executor(None, os.read, master_fd, 4096)
+                if not data:
+                    break
+                await websocket.send_text(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+
+    async def ws_to_pty():
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                try:
+                    data = json.loads(msg)
+                    msg_type = data.get("type")
+                    if msg_type == "input":
+                        inp_data = data.get("data", "")
+                        os.write(master_fd, inp_data.encode("utf-8"))
+                    elif msg_type == "resize":
+                        cols = int(data.get("cols", 120))
+                        rows = int(data.get("rows", 30))
+                        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                except (json.JSONDecodeError, OSError):
+                    pass
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    task_pty = asyncio.create_task(pty_to_ws())
+    task_ws = asyncio.create_task(ws_to_pty())
+
+    done, pending = await asyncio.wait(
+        [task_pty, task_ws],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    for task in pending:
+        task.cancel()
+
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+
+    try:
+        os.kill(pid, signal.SIGHUP)
+        await asyncio.sleep(0.05)
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (OSError, ChildProcessError):
+        pass
+
+
+# ============================================================
+# 5. Wi-Fi Management
+# ============================================================
+def parse_nmcli_wifi_list(output: str):
+    """Parse nmcli terse output for Wi-Fi networks."""
+    results = []
+    for line in output.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = re.split(r"(?<!\\):", line)
+        parts = [p.replace(r"\:", ":").replace(r"\\", "\\") for p in parts]
+        if len(parts) >= 6:
+            in_use = parts[0].strip() == "*"
+            ssid = parts[1].strip()
+            bssid = parts[2].strip()
+            signal_str = parts[3].strip()
+            signal_val = int(signal_str) if signal_str.isdigit() else 0
+            bars = parts[4].strip()
+            security = parts[5].strip()
+            chan = parts[6].strip() if len(parts) > 6 else ""
+            freq = parts[7].strip() if len(parts) > 7 else ""
+
+            if not ssid and not bssid:
+                continue
+
+            results.append({
+                "in_use": in_use,
+                "ssid": ssid or "(非公開ネットワーク)",
+                "bssid": bssid,
+                "signal": signal_val,
+                "bars": bars,
+                "security": security or "Open",
+                "chan": chan,
+                "freq": freq,
+            })
+
+    results.sort(key=lambda x: (not x["in_use"], -x["signal"]))
+    return results
+
+
+@app.get("/api/wifi/status")
+async def wifi_status():
+    """Get Wi-Fi status and current connection info."""
+    which_nmcli = await run_cmd("which nmcli")
+    nmcli_available = which_nmcli["returncode"] == 0
+
+    if nmcli_available:
+        radio = await run_cmd("nmcli radio wifi")
+        wifi_enabled = radio["stdout"].strip().lower() == "enabled"
+
+        dev_res = await run_cmd("nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device")
+        wifi_devices = []
+        active_conn = None
+
+        for line in dev_res["stdout"].strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[1].strip() == "wifi":
+                dev_name = parts[0].strip()
+                dev_state = parts[2].strip()
+                conn_name = parts[3].strip() if len(parts) > 3 else ""
+                is_connected = dev_state in ("connected", "接続済み")
+                wifi_devices.append({
+                    "device": dev_name,
+                    "state": dev_state,
+                    "connection": conn_name,
+                    "connected": is_connected,
+                })
+                if is_connected and conn_name:
+                    active_conn = {
+                        "ssid": conn_name,
+                        "device": dev_name,
+                        "state": dev_state,
+                    }
+
+        if active_conn:
+            ip_res = await run_cmd(f"ip -4 addr show {active_conn['device']} 2>/dev/null | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){{3}}' || true")
+            active_conn["ip"] = ip_res["stdout"].strip()
+
+            wifi_info = await run_cmd("nmcli -t -f IN-USE,SSID,BSSID,SIGNAL,BARS,SECURITY device wifi list 2>/dev/null")
+            parsed = parse_nmcli_wifi_list(wifi_info["stdout"])
+            for net in parsed:
+                if net["in_use"] or net["ssid"] == active_conn["ssid"]:
+                    active_conn["signal"] = net["signal"]
+                    active_conn["security"] = net["security"]
+                    active_conn["bssid"] = net["bssid"]
+                    break
+
+        return {
+            "available": len(wifi_devices) > 0,
+            "nmcli": True,
+            "enabled": wifi_enabled,
+            "connected": active_conn is not None,
+            "current": active_conn,
+            "devices": wifi_devices,
+        }
+
+    # Fallback when nmcli is not present
+    wlan_ifaces = []
+    try:
+        for p in Path("/sys/class/net").iterdir():
+            if (p / "wireless").exists() or (p / "phy80211").exists() or p.name.startswith("wl"):
+                wlan_ifaces.append(p.name)
+    except Exception:
+        pass
+
+    return {
+        "available": len(wlan_ifaces) > 0,
+        "nmcli": False,
+        "enabled": len(wlan_ifaces) > 0,
+        "connected": False,
+        "current": None,
+        "devices": [{"device": iface, "state": "unknown", "connected": False} for iface in wlan_ifaces],
+        "message": "NetworkManager (nmcli) がインストールされていません。" if not nmcli_available else "",
+    }
+
+
+@app.get("/api/wifi/scan")
+async def wifi_scan():
+    """Scan for available Wi-Fi networks."""
+    which_nmcli = await run_cmd("which nmcli")
+    if which_nmcli["returncode"] != 0:
+        return {
+            "success": False,
+            "networks": [],
+            "error": "nmcli (NetworkManager) が必要です。sudo apt install network-manager を実行してください。",
+        }
+
+    scan_res = await run_cmd(_sudo("nmcli -t -f IN-USE,SSID,BSSID,SIGNAL,BARS,SECURITY,CHAN,FREQ device wifi list --rescan yes"), timeout=25)
+    if scan_res["returncode"] != 0:
+        scan_res = await run_cmd("nmcli -t -f IN-USE,SSID,BSSID,SIGNAL,BARS,SECURITY,CHAN,FREQ device wifi list", timeout=15)
+
+    networks = parse_nmcli_wifi_list(scan_res["stdout"])
+    return {
+        "success": True,
+        "networks": networks,
+        "count": len(networks),
+    }
+
+
+@app.post("/api/wifi/connect")
+async def wifi_connect(req: Request):
+    """Connect to a Wi-Fi network."""
+    data = await req.json()
+    ssid = data.get("ssid", "").strip()
+    password = data.get("password", "").strip()
+    bssid = data.get("bssid", "").strip()
+
+    if not ssid:
+        raise HTTPException(status_code=400, detail="SSID is required")
+
+    safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+    safe_pwd = password.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+    safe_bssid = bssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`') if bssid else ""
+
+    if safe_pwd:
+        if safe_bssid:
+            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" password "{safe_pwd}" bssid "{safe_bssid}"')
+        else:
+            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" password "{safe_pwd}"')
+    else:
+        if safe_bssid:
+            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" bssid "{safe_bssid}"')
+        else:
+            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}"')
+
+    res = await run_cmd(cmd, timeout=45)
+    success = res["returncode"] == 0
+    return {
+        "success": success,
+        "message": res["stdout"].strip() if success else (res["stderr"].strip() or res["stdout"].strip() or "接続に失敗しました"),
+    }
+
+
+@app.post("/api/wifi/disconnect")
+async def wifi_disconnect(req: Request):
+    """Disconnect currently connected Wi-Fi."""
+    data = await req.json()
+    ssid = data.get("ssid", "").strip()
+    device = data.get("device", "").strip()
+
+    if ssid:
+        safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+        res = await run_cmd(_sudo(f'nmcli connection down id "{safe_ssid}"'), timeout=15)
+        if res["returncode"] == 0:
+            return {"success": True, "message": f"{ssid} から切断しました"}
+
+    if device:
+        safe_dev = device.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+        res = await run_cmd(_sudo(f'nmcli device disconnect "{safe_dev}"'), timeout=15)
+        return {
+            "success": res["returncode"] == 0,
+            "message": res["stdout"].strip() or res["stderr"].strip(),
+        }
+
+    wifi_disconnect_cmd = (
+        "nmcli -t -f DEVICE,TYPE device | grep ':wifi' | cut -d: -f1 | xargs -r -I{} nmcli device disconnect {}"
+        if IS_ROOT
+        else "sudo nmcli -t -f DEVICE,TYPE device | grep ':wifi' | cut -d: -f1 | xargs -r -I{} sudo nmcli device disconnect {}"
+    )
+    res = await run_cmd(wifi_disconnect_cmd, timeout=15)
+    return {
+        "success": res["returncode"] == 0,
+        "message": "Wi-Fiを切断しました",
+    }
+
+
+@app.post("/api/wifi/forget")
+async def wifi_forget(req: Request):
+    """Forget / delete a saved Wi-Fi connection profile."""
+    data = await req.json()
+    ssid = data.get("ssid", "").strip()
+    if not ssid:
+        raise HTTPException(status_code=400, detail="SSID is required")
+
+    safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+    res = await run_cmd(_sudo(f'nmcli connection delete id "{safe_ssid}"'), timeout=15)
+    return {
+        "success": res["returncode"] == 0,
+        "message": res["stdout"].strip() or res["stderr"].strip(),
+    }
+
+
+@app.post("/api/wifi/toggle")
+async def wifi_toggle(req: Request):
+    """Turn Wi-Fi radio on/off."""
+    data = await req.json()
+    enable = data.get("enable", True)
+    cmd = _sudo("nmcli radio wifi on") if enable else _sudo("nmcli radio wifi off")
+    res = await run_cmd(cmd, timeout=15)
+    return {
+        "success": res["returncode"] == 0,
+        "message": res["stdout"].strip() or res["stderr"].strip(),
+    }
+
+
+# ============================================================
+# 6. serv-UI Management & System Control
+# ============================================================
+@app.get("/api/selfcode/status")
+async def selfcode_status():
+    """Check if selfcode is installed and return its URL."""
+    # Check if systemd service exists or directory exists
+    svc = await run_cmd("systemctl is-enabled selfcode 2>/dev/null", timeout=5)
+    dir_check = await run_cmd("test -d /opt/lxd-data/selfcode", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    url = None
+    if installed:
+        # Get Tailscale hostname
+        ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+        try:
+            data = json.loads(ts["stdout"])
+            dns = data.get("Self", {}).get("DNSName", "")
+            if dns:
+                hostname = dns.rstrip(".")
+                url = f"https://{hostname}:3339/"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return {"installed": installed, "url": url}
+
+
+@app.get("/api/easylxd/status")
+async def easylxd_status():
+    """Check if Easy LXD is installed and return its URL."""
+    svc = await run_cmd("systemctl is-enabled easy-lxd 2>/dev/null", timeout=5)
+    dir_check = await run_cmd("test -d /opt/easy-lxd", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    url = None
+    if installed:
+        ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+        try:
+            data = json.loads(ts["stdout"])
+            dns = data.get("Self", {}).get("DNSName", "")
+            if dns:
+                hostname = dns.rstrip(".")
+                url = f"https://{hostname}:3329/"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return {"installed": installed, "url": url}
+
+
+@app.get("/api/vmmanager/status")
+async def vmmanager_status():
+    """Check if VM Manager is installed and return its URL."""
+    svc = await run_cmd("systemctl is-enabled vm-manage 2>/dev/null", timeout=5)
+    dir_check = await run_cmd("test -d /opt/vm-manage", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    url = None
+    if installed:
+        ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+        try:
+            data = json.loads(ts["stdout"])
+            dns = data.get("Self", {}).get("DNSName", "")
+            if dns:
+                hostname = dns.rstrip(".")
+                url = f"https://{hostname}:8090/"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return {"installed": installed, "url": url}
+
+
+@app.post("/api/servui/restart")
+async def restart_servui():
+    """Restart serv-UI service."""
+    async def do_restart():
+        await asyncio.sleep(0.5)
+        await run_cmd(_sudo("systemctl restart servui"), timeout=15)
+    asyncio.create_task(do_restart())
+    return {"success": True, "stdout": "Restarting...", "errors": ""}
+
+
+@app.post("/api/system/reboot")
+async def reboot_system():
+    """Reboot the host system."""
+    async def do_reboot():
+        await asyncio.sleep(1.0)
+        await run_cmd(_sudo("/usr/bin/systemctl reboot || /usr/sbin/reboot || /sbin/reboot || reboot"), timeout=15)
+    asyncio.create_task(do_reboot())
+    return {"success": True, "message": "システムを再起動しています..."}
+
+
+
+# ============================================================
+# Main HTML page
+# ============================================================
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=3355,
+        log_level="info",
+    )
