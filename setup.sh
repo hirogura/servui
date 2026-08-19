@@ -79,6 +79,9 @@ servui ALL=(ALL) NOPASSWD: /usr/bin/systemctl, \
     /usr/sbin/reboot, \
     /sbin/reboot, \
     /usr/bin/reboot, \
+    /usr/sbin/poweroff, \
+    /sbin/poweroff, \
+    /usr/bin/poweroff, \
     /usr/bin/nmcli, \
     /usr/sbin/wpa_cli, \
     /usr/sbin/iw, \
@@ -108,6 +111,9 @@ $PRIMARY_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl, \
     /usr/sbin/reboot, \
     /sbin/reboot, \
     /usr/bin/reboot, \
+    /usr/sbin/poweroff, \
+    /sbin/poweroff, \
+    /usr/bin/poweroff, \
     /usr/bin/nmcli, \
     /usr/sbin/wpa_cli, \
     /usr/sbin/iw, \

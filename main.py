@@ -922,7 +922,7 @@ async def reboot_system():
     """Reboot the host system."""
     async def do_reboot():
         await asyncio.sleep(1.0)
-        await run_cmd(_sudo("/usr/bin/systemctl reboot || /usr/sbin/reboot || /sbin/reboot || reboot"), timeout=15)
+        await run_cmd(f"{_sudo('/usr/bin/systemctl reboot')} || {_sudo('/usr/sbin/reboot')} || {_sudo('/sbin/reboot')} || {_sudo('reboot')}", timeout=15)
     asyncio.create_task(do_reboot())
     return {"success": True, "message": "システムを再起動しています..."}
 
@@ -932,7 +932,7 @@ async def shutdown_system():
     """Shut down the host system."""
     async def do_shutdown():
         await asyncio.sleep(1.0)
-        await run_cmd(_sudo("/usr/bin/systemctl poweroff || /usr/sbin/poweroff || /sbin/poweroff || poweroff"), timeout=15)
+        await run_cmd(f"{_sudo('/usr/bin/systemctl poweroff')} || {_sudo('/usr/sbin/poweroff')} || {_sudo('/sbin/poweroff')} || {_sudo('poweroff')}", timeout=15)
     asyncio.create_task(do_shutdown())
     return {"success": True, "message": "システムをシャットダウンしています..."}
 
