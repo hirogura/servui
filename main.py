@@ -927,6 +927,15 @@ async def reboot_system():
     return {"success": True, "message": "システムを再起動しています..."}
 
 
+@app.post("/api/system/shutdown")
+async def shutdown_system():
+    """Shut down the host system."""
+    async def do_shutdown():
+        await asyncio.sleep(1.0)
+        await run_cmd(_sudo("/usr/bin/systemctl poweroff || /usr/sbin/poweroff || /sbin/poweroff || poweroff"), timeout=15)
+    asyncio.create_task(do_shutdown())
+    return {"success": True, "message": "システムをシャットダウンしています..."}
+
 
 # ============================================================
 # Main HTML page

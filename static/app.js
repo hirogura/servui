@@ -70,6 +70,21 @@ async function rebootSystem() {
   }
 }
 
+async function shutdownSystem() {
+  if (!confirm('PC（サーバー本体）をシャットダウンしますか？\nシャットダウン後はサーバーの電源が切れ、serv-UIにアクセスできなくなります。')) return;
+  try {
+    const resp = await fetch('/api/system/shutdown', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus('PCのシャットダウンを開始しました。サーバーの電源が切れます。', 'info');
+    } else {
+      showStatus(`PCシャットダウンに失敗しました: ${data.message || data.errors}`, 'error');
+    }
+  } catch (e) {
+    showStatus('PCのシャットダウンコマンドを送信しました。サーバーがシャットダウン中です...', 'info');
+  }
+}
+
 
 // --- Dashboard ---
 async function loadDashboard() {

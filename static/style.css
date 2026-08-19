@@ -165,6 +165,14 @@ body {
   background: var(--danger-soft);
 }
 
+.btn-sidebar.btn-shutdown {
+  color: var(--danger);
+}
+
+.btn-sidebar.btn-shutdown:hover {
+  background: var(--danger-soft);
+}
+
 
 /* ── Main Content ── */
 .content {
