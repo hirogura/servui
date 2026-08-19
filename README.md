@@ -27,8 +27,14 @@ curl -fsSL https://tailscale.com/install.sh | sh
 # Tailscale 接続
 tailscale up
 ```
+### Ubuntu 26.04 Serverインストール直後なら下記でアップデートやTailscale、serv-UIまで一気に（推奨）
 
-### 自動インストール (推奨)
+```bash
+wget -qO ubsv.sh https://raw.githubusercontent.com/hirogura/servui/main/ubsv.sh
+bash ubsv.sh
+```
+
+### 自動インストール (通常)
 
 ```bash
 sudo git clone https://github.com/hirogura/servui.git
