@@ -12,11 +12,13 @@ import pty
 import pwd
 import re
 import select
+import shlex
 import signal
 import struct
 import subprocess
 import sys
 import termios
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -1734,6 +1736,588 @@ async def shutdown_system():
         await run_cmd(f"{_sudo('/usr/bin/systemctl poweroff')} || {_sudo('/usr/sbin/poweroff')} || {_sudo('/sbin/poweroff')} || {_sudo('poweroff')}", timeout=15)
     asyncio.create_task(do_shutdown())
     return {"success": True, "message": "システムをシャットダウンしています..."}
+
+
+# ============================================================
+# 8. GRUB Management (based on /iso/grub-manage.sh)
+# ============================================================
+GRUB_CUSTOM_FILE = "/etc/grub.d/40_custom"
+GRUB_BACKUP_DIR = "/root/grub-backups"
+_GRUB_ENTRY_RE = re.compile(r"""^\s*(?:menuentry|submenu)\s+['"]([^'"]*)['"]""")
+_ISO_BOOT_CANDIDATES = [
+    ("casper/vmlinuz", "casper/initrd", "casper"),
+    ("casper/vmlinuz.efi", "casper/initrd.lz", "casper"),
+    ("live/vmlinuz", "live/initrd.img", "live"),
+    ("live/vmlinuz.efi", "live/initrd.img", "live"),
+]
+
+
+def _find_grub_cfg() -> str:
+    for f in ("/boot/grub/grub.cfg", "/boot/grub2/grub.cfg", "/boot/efi/EFI/ubuntu/grub.cfg"):
+        if os.path.isfile(f):
+            return f
+    return ""
+
+
+async def _read_text(path: str) -> str | None:
+    """Read a file, falling back to sudo cat when permission denied."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except PermissionError:
+        res = await run_cmd(_sudo(f"cat {shlex.quote(path)}"))
+        return res["stdout"] if res["returncode"] == 0 else None
+    except OSError:
+        return None
+
+
+def _parse_grub_cfg(content: str) -> list[dict]:
+    """Parse grub.cfg into entry list (mirrors grub-manage.sh parse_grub_cfg)."""
+    lines = content.split("\n")
+
+    custom_names: set[str] = set()
+    in_cs = False
+    begin_re = re.compile(r"^###\ BEGIN\ (.+)\ ###$")
+    end_re = re.compile(r"^###\ END\ (.+)\ ###$")
+    for line in lines:
+        m = begin_re.match(line.strip())
+        if m:
+            in_cs = m.group(1).strip() == GRUB_CUSTOM_FILE
+            continue
+        m = end_re.match(line.strip())
+        if m:
+            in_cs = False
+            continue
+        if in_cs:
+            em = _GRUB_ENTRY_RE.match(line)
+            if em:
+                custom_names.add(em.group(1))
+
+    def src_of(name: str) -> str:
+        return "custom" if name in custom_names else "auto"
+
+    entries: list[dict] = []
+    top_index = -1
+    in_submenu = False
+    sub_index = -1
+    sub_top_index = -1
+
+    for line in lines:
+        if not in_submenu and re.match(r"^submenu\s", line):
+            top_index += 1
+            sub_top_index = top_index
+            in_submenu = True
+            sub_index = -1
+            m = _GRUB_ENTRY_RE.match(line)
+            name = m.group(1) if m else ""
+            entries.append({"name": name, "class": "submenu_header",
+                            "grub_id": str(top_index), "source": src_of(name)})
+            continue
+        if in_submenu and re.match(r"^}\s*$", line):
+            in_submenu = False
+            sub_top_index = -1
+            continue
+        if in_submenu and re.match(r"^\s+menuentry\s", line):
+            sub_index += 1
+            m = _GRUB_ENTRY_RE.match(line)
+            name = m.group(1) if m else ""
+            entries.append({"name": name, "class": "sub_entry",
+                            "grub_id": f"{sub_top_index}>{sub_index}", "source": src_of(name)})
+            continue
+        if not in_submenu and re.match(r"^menuentry\s", line):
+            top_index += 1
+            m = _GRUB_ENTRY_RE.match(line)
+            name = m.group(1) if m else ""
+            entries.append({"name": name, "class": "toplevel",
+                            "grub_id": str(top_index), "source": src_of(name)})
+            continue
+
+    return entries
+
+
+async def _grub_settings() -> dict:
+    result = {"default": None, "timeout": None,
+              "saved_entry": None, "next_entry": None, "recordfail": None}
+    txt = await _read_text("/etc/default/grub")
+    if txt:
+        for line in txt.splitlines():
+            line = line.strip()
+            if line.startswith("GRUB_DEFAULT="):
+                result["default"] = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith("GRUB_TIMEOUT="):
+                result["timeout"] = line.split("=", 1)[1].strip().strip('"')
+
+    for env_file in ("/boot/grub/grubenv", "/boot/grub2/grubenv"):
+        if not os.path.isfile(env_file):
+            continue
+        res = await run_cmd(f"grub-editenv {shlex.quote(env_file)} list 2>/dev/null")
+        for line in res["stdout"].splitlines():
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k == "saved_entry":
+                result["saved_entry"] = v
+            elif k == "next_entry":
+                result["next_entry"] = v
+            elif k == "recordfail":
+                result["recordfail"] = v
+        break
+    return result
+
+
+async def _efi_entries() -> list[dict]:
+    which = await run_cmd("which efibootmgr")
+    if which["returncode"] != 0:
+        return []
+    res = await run_cmd(_sudo("efibootmgr"), timeout=10)
+    out = []
+    for line in res["stdout"].splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        out.append({"text": line, "active": line.startswith("*")})
+    return out
+
+
+async def _stale_grub_backups() -> list[str]:
+    res = await run_cmd("find /etc/grub.d -maxdepth 1 -name '40_custom.bak.*' 2>/dev/null")
+    return [l.strip() for l in res["stdout"].splitlines() if l.strip()]
+
+
+@app.get("/api/grub/info")
+async def grub_info():
+    """Get GRUB config path, parsed entries, current settings, EFI entries."""
+    cfg = _find_grub_cfg()
+    content = await _read_text(cfg) if cfg else None
+    entries = _parse_grub_cfg(content) if content else []
+    return {
+        "cfg_path": cfg,
+        "custom_file": GRUB_CUSTOM_FILE,
+        "entries": entries,
+        "settings": await _grub_settings(),
+        "efi": await _efi_entries(),
+        "stale_backups": await _stale_grub_backups(),
+    }
+
+
+@app.get("/api/grub/partitions")
+async def grub_partitions():
+    """List partitions / LVM logical volumes usable as ISO storage."""
+    res = await run_cmd(
+        "lsblk -J -o NAME,SIZE,FSTYPE,TYPE,LABEL,MOUNTPOINTS 2>/dev/null", timeout=10
+    )
+    parts: list[dict] = []
+    try:
+        data = json.loads(res["stdout"])
+
+        def walk(dev):
+            name = dev.get("name", "")
+            dtype = dev.get("type", "")
+            fstype = dev.get("fstype") or ""
+            if not name.startswith("loop") and dtype in ("part", "lvm") and fstype != "LVM2_member":
+                mps = dev.get("mountpoints")
+                if isinstance(mps, list):
+                    mp = next((m for m in mps if m), "")
+                elif isinstance(mps, str):
+                    mp = mps
+                else:
+                    mp = ""
+                parts.append({
+                    "name": name,
+                    "size": dev.get("size", ""),
+                    "fstype": fstype,
+                    "label": (dev.get("label") or "").strip(),
+                    "mountpoint": mp,
+                    "is_lvm": dtype == "lvm",
+                    "supported": fstype in ("ext2", "ext3", "ext4", "xfs"),
+                })
+            for c in dev.get("children") or []:
+                walk(c)
+
+        for d in data.get("blockdevices", []):
+            walk(d)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return {"partitions": parts}
+
+
+async def _resolve_part_device(name: str) -> tuple[str, bool] | None:
+    """Resolve partition/LV name to device path. Returns (path, is_lvm) or None."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return None
+    mapper = f"/dev/mapper/{name}"
+    r1 = await run_cmd(f"test -b {shlex.quote(mapper)}")
+    if r1["returncode"] == 0:
+        return mapper, True
+    dev = f"/dev/{name}"
+    r2 = await run_cmd(f"test -b {shlex.quote(dev)}")
+    if r2["returncode"] == 0:
+        return dev, False
+    return None
+
+
+async def _detect_boot_paths(iso_path: str) -> tuple[str, str, str]:
+    """Loop-mount an ISO read-only and detect vmlinuz/initrd paths (like _detect_boot_paths in the script)."""
+    tmp = f"/mnt/_servui_isoinspect_{os.getpid()}"
+    await run_cmd(_sudo(f"mkdir -p {shlex.quote(tmp)}"))
+    vmlinuz, initrd, boot_type = "UNKNOWN", "UNKNOWN", "custom"
+    mounted = False
+    try:
+        mres = await run_cmd(
+            _sudo(f"mount -o loop,ro {shlex.quote(iso_path)} {shlex.quote(tmp)}"), timeout=30
+        )
+        if mres["returncode"] == 0:
+            mounted = True
+            tests = " ; ".join(
+                f"test -f {shlex.quote(tmp + '/' + c[0])} && echo {shlex.quote(c[0])}"
+                for c in _ISO_BOOT_CANDIDATES
+            )
+            tres = await run_cmd(_sudo(tests), timeout=10)
+            found = [l.strip() for l in tres["stdout"].splitlines() if l.strip()]
+            if found:
+                for c in _ISO_BOOT_CANDIDATES:
+                    if c[0] == found[0]:
+                        vmlinuz, initrd, boot_type = f"/{c[0]}", f"/{c[1]}", c[2]
+                        break
+            else:
+                fres = await run_cmd(
+                    _sudo(f"find {shlex.quote(tmp)} -name 'vmlinuz*' 2>/dev/null | head -1"),
+                    timeout=15,
+                )
+                vfound = fres["stdout"].strip()
+                if vfound:
+                    vmlinuz = vfound[len(tmp):] if vfound.startswith(tmp) else f"/{os.path.basename(vfound)}"
+                    vdir = os.path.dirname(vfound)
+                    ires = await run_cmd(
+                        _sudo(f"find {shlex.quote(vdir)} -name 'initrd*' 2>/dev/null | head -1"),
+                        timeout=15,
+                    )
+                    ifound = ires["stdout"].strip()
+                    initrd = (ifound[len(tmp):] if ifound.startswith(tmp) else "") or "UNKNOWN"
+                    boot_type = "custom"
+    finally:
+        if mounted:
+            await run_cmd(_sudo(f"umount {shlex.quote(tmp)}"), timeout=15)
+        await run_cmd(_sudo(f"rmdir {shlex.quote(tmp)} 2>/dev/null"))
+    return vmlinuz, initrd, boot_type
+
+
+@app.post("/api/grub/isos")
+async def grub_scan_isos(req: Request):
+    """Mount a partition temporarily, list ISO files with auto-detected boot paths."""
+    data = await req.json()
+    name = (data.get("device") or "").strip()
+
+    resolved = await _resolve_part_device(name)
+    if not resolved:
+        return {"success": False, "error": f"デバイス {name} が見つかりません"}
+    part_dev, is_lvm = resolved
+
+    cur_mp_res = await run_cmd(f"lsblk -no MOUNTPOINTS {shlex.quote(part_dev)} 2>/dev/null | head -1")
+    cur_mp = cur_mp_res["stdout"].strip()
+    tmp_mp = f"/mnt/_servui_isoboot_{os.getpid()}"
+    mount_point = cur_mp
+    mounted_here = False
+    if not mount_point:
+        mk = await run_cmd(_sudo(f"mkdir -p {shlex.quote(tmp_mp)}"))
+        if mk["returncode"] != 0:
+            return {"success": False, "error": "一時マウントポイントを作成できませんでした"}
+        mres = await run_cmd(
+            _sudo(f"mount {shlex.quote(part_dev)} {shlex.quote(tmp_mp)}"), timeout=30
+        )
+        if mres["returncode"] != 0:
+            await run_cmd(_sudo(f"rmdir {shlex.quote(tmp_mp)} 2>/dev/null"))
+            return {"success": False, "error": f"マウントに失敗しました: {mres['stderr'].strip()}"}
+        mount_point = tmp_mp
+        mounted_here = True
+
+    try:
+        fres = await run_cmd(
+            f"find {shlex.quote(mount_point)} -maxdepth 2 -name '*.iso' 2>/dev/null", timeout=20
+        )
+        iso_full_paths = [l.strip() for l in fres["stdout"].splitlines() if l.strip()]
+        isos = []
+        for full in iso_full_paths:
+            sz_res = await run_cmd(f"du -sh {shlex.quote(full)} 2>/dev/null | cut -f1")
+            vmin, ird, btype = await _detect_boot_paths(full)
+            isos.append({
+                "path": full[len(mount_point):] or f"/{os.path.basename(full)}",
+                "size": sz_res["stdout"].strip(),
+                "vmlinuz": vmin,
+                "initrd": ird,
+                "boot_type": btype,
+            })
+        uuid_res = await run_cmd(f"blkid -s UUID -o value {shlex.quote(part_dev)} 2>/dev/null")
+        return {
+            "success": True,
+            "device": part_dev,
+            "is_lvm": is_lvm,
+            "uuid": uuid_res["stdout"].strip(),
+            "isos": isos,
+        }
+    finally:
+        if mounted_here:
+            await run_cmd(_sudo(f"umount {shlex.quote(mount_point)}"), timeout=20)
+            await run_cmd(_sudo(f"rmdir {shlex.quote(mount_point)} 2>/dev/null"))
+
+
+def _validate_grub_path(p: str) -> bool:
+    if not p.startswith("/"):
+        return False
+    if ".." in p.split("/"):
+        return False
+    return not any(ch in p for ch in ('"', "'", "`", "\\", "\n", "\r", "$", ";", "&", "|", "<", ">"))
+
+
+def _build_iso_grub_entry(menu_label: str, iso_rel: str, vmlinuz: str, initrd: str,
+                          boot_type: str, *, is_lvm: bool, lvm_name: str, part_uuid: str) -> str:
+    """Generate a menuentry block (same format as grub-manage.sh)."""
+    if boot_type == "casper":
+        params = "boot=casper iso-scan/filename=$isofile quiet splash ---"
+    elif boot_type == "live":
+        params = "boot=live iso-scan/filename=$isofile quiet splash"
+    else:
+        params = "iso-scan/filename=$isofile quiet splash"
+
+    if is_lvm:
+        return (
+            f'\nmenuentry "{menu_label} (ISO Loop Boot)" {{\n'
+            "    insmod part_gpt\n"
+            "    insmod lvm\n"
+            "    insmod ext2\n"
+            "    insmod loopback\n"
+            "    insmod iso9660\n"
+            f"    set root='(lvm/{lvm_name})'\n"
+            f'    set isofile="{iso_rel}"\n'
+            "    loopback loop $isofile\n"
+            f"    linux  (loop){vmlinuz} {params}\n"
+            f"    initrd (loop){initrd}\n"
+            "}\n"
+        )
+    return (
+        f'\nmenuentry "{menu_label} (ISO Loop Boot)" {{\n'
+        "    insmod part_gpt\n"
+        "    insmod ext2\n"
+        "    insmod loopback\n"
+        "    insmod iso9660\n"
+        f"    search --no-floppy --fs-uuid --set=isodev {part_uuid}\n"
+        f'    set isofile="{iso_rel}"\n'
+        "    loopback loop ($isodev)$isofile\n"
+        f"    linux  (loop){vmlinuz} {params}\n"
+        f"    initrd (loop){initrd}\n"
+        "}\n"
+    )
+
+
+async def _backup_grub_custom() -> str | None:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = f"{GRUB_BACKUP_DIR}/40_custom.bak.{ts}"
+    await run_cmd(_sudo(f"mkdir -p {shlex.quote(GRUB_BACKUP_DIR)}"))
+    res = await run_cmd(_sudo(f"cp {shlex.quote(GRUB_CUSTOM_FILE)} {shlex.quote(dst)}"))
+    return dst if res["returncode"] == 0 else None
+
+
+async def _append_to_custom(block: str) -> tuple[bool, str]:
+    try:
+        with open(GRUB_CUSTOM_FILE, "a", encoding="utf-8") as f:
+            f.write(block)
+        return True, ""
+    except PermissionError:
+        fd, tmp = tempfile.mkstemp(prefix="servui_grub_", dir="/tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(block)
+        try:
+            res = await run_cmd(
+                _sudo(f"sh -c 'cat {shlex.quote(tmp)} >> {shlex.quote(GRUB_CUSTOM_FILE)}'")
+            )
+            return res["returncode"] == 0, res["stderr"]
+        finally:
+            os.unlink(tmp)
+
+
+async def _write_root_file(path: str, content: str) -> tuple[bool, str]:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return True, ""
+    except PermissionError:
+        fd, tmp = tempfile.mkstemp(prefix="servui_grub_", dir="/tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        try:
+            res = await run_cmd(_sudo(f"cp {shlex.quote(tmp)} {shlex.quote(path)}"))
+            return res["returncode"] == 0, res["stderr"]
+        finally:
+            os.unlink(tmp)
+
+
+@app.post("/api/grub/entries/add")
+async def grub_entries_add(req: Request):
+    """Append ISO loop boot entries to 40_custom, backup first, then update-grub."""
+    data = await req.json()
+    name = (data.get("device") or "").strip()
+    isos = data.get("isos") or []
+    if not isinstance(isos, list) or not isos:
+        raise HTTPException(status_code=400, detail="isos are required")
+
+    resolved = await _resolve_part_device(name)
+    if not resolved:
+        return {"success": False, "message": f"デバイス {name} が見つかりません"}
+    part_dev, is_lvm = resolved
+    lvm_name = os.path.basename(part_dev) if is_lvm else ""
+
+    part_uuid = ""
+    if not is_lvm:
+        ures = await run_cmd(f"blkid -s UUID -o value {shlex.quote(part_dev)} 2>/dev/null")
+        part_uuid = ures["stdout"].strip()
+        if not part_uuid:
+            return {"success": False, "message": "パーティションのUUIDを取得できませんでした"}
+
+    cleaned: list[tuple[str, str, str, str]] = []
+    for iso in isos:
+        iso_rel = str(iso.get("path", "")).strip()
+        vmin = str(iso.get("vmlinuz", "")).strip()
+        ird = str(iso.get("initrd", "")).strip()
+        btype = str(iso.get("boot_type", "custom")).strip() or "custom"
+        if not _validate_grub_path(iso_rel) or not _validate_grub_path(vmin) or not _validate_grub_path(ird):
+            return {"success": False, "message": f"無効なパスが含まれています: {iso_rel}"}
+        cleaned.append((iso_rel, vmin, ird, btype))
+
+    t = await run_cmd(f"test -f {shlex.quote(GRUB_CUSTOM_FILE)}")
+    if t["returncode"] != 0:
+        return {"success": False, "message": f"{GRUB_CUSTOM_FILE} が見つかりません"}
+
+    bak = await _backup_grub_custom()
+    if not bak:
+        return {"success": False, "message": "バックアップの作成に失敗しました"}
+
+    blocks = []
+    added_labels = []
+    for iso_rel, vmin, ird, btype in cleaned:
+        menu_label = re.sub(r"[\"'`\\$;&|<>\n\r]", "", os.path.basename(iso_rel))
+        if menu_label.endswith(".iso"):
+            menu_label = menu_label[:-4]
+        blocks.append(_build_iso_grub_entry(
+            menu_label, iso_rel, vmin, ird, btype,
+            is_lvm=is_lvm, lvm_name=lvm_name, part_uuid=part_uuid,
+        ))
+        added_labels.append(menu_label)
+
+    ok, err = await _append_to_custom("\n".join(blocks))
+    if not ok:
+        return {"success": False, "message": f"{GRUB_CUSTOM_FILE}への追記に失敗しました: {err}"}
+
+    upd = await run_cmd(_sudo("update-grub"), timeout=180)
+    tail_lines = [l for l in upd["stdout"].splitlines() if l.strip()][-8:]
+    msg = f"{len(added_labels)}件のISOループブートエントリーを追加しました ({', '.join(added_labels)})\nバックアップ: {bak}"
+    if upd["returncode"] == 0:
+        msg += "\nupdate-grub 完了"
+    else:
+        msg += "\n警告: update-grubでエラーが発生しました。ターミナルで sudo update-grub を確認してください。"
+    return {"success": True, "message": msg, "output": "\n".join(tail_lines)}
+
+
+def _remove_menuentry_block(content: str, name: str, occurrence: int) -> str:
+    """Remove the Nth occurrence of a menuentry block by brace depth tracking."""
+    out = []
+    skip = False
+    depth = 0
+    match_count = 0
+    for line in content.split("\n"):
+        if not skip and "menuentry" in line and name in line:
+            match_count += 1
+            if match_count == occurrence:
+                skip = True
+                depth = 0
+                continue
+        if skip:
+            for ch in line:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth <= 0:
+                        skip = False
+                        break
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+@app.post("/api/grub/entries/delete")
+async def grub_entries_delete(req: Request):
+    """Delete custom (40_custom-derived) entries by index, backup first, then update-grub."""
+    data = await req.json()
+    indices = data.get("indices")
+    if not isinstance(indices, list) or not indices:
+        raise HTTPException(status_code=400, detail="indices are required")
+
+    cfg = _find_grub_cfg()
+    if not cfg:
+        return {"success": False, "message": "grub.cfgが見つかりません"}
+    content_cfg = await _read_text(cfg)
+    if content_cfg is None:
+        return {"success": False, "message": "grub.cfgを読み取れませんでした"}
+    entries = _parse_grub_cfg(content_cfg)
+
+    deletable = {i for i, e in enumerate(entries)
+                 if e["source"] == "custom" and e["class"] != "submenu_header"}
+    try:
+        req_idx = [int(i) for i in indices]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid indices")
+    if any(i < 0 or i >= len(entries) or i not in deletable for i in req_idx):
+        return {"success": False, "message": "削除できないエントリーが含まれています（40_custom由来のみ削除可能）"}
+
+    occ_map: dict[str, list[int]] = {}
+    for num in req_idx:
+        tname = entries[num]["name"]
+        occ = 0
+        for i, e in enumerate(entries):
+            if e["source"] != "custom" or e["class"] == "submenu_header":
+                continue
+            if e["name"] == tname:
+                occ += 1
+            if i == num:
+                break
+        occ_map.setdefault(tname, []).append(occ)
+
+    content = await _read_text(GRUB_CUSTOM_FILE)
+    if content is None:
+        return {"success": False, "message": f"{GRUB_CUSTOM_FILE} を読み取れませんでした"}
+
+    bak = await _backup_grub_custom()
+    if not bak:
+        return {"success": False, "message": "バックアップの作成に失敗しました"}
+
+    removed = []
+    for tname, occs in occ_map.items():
+        for occ in sorted(set(occs), reverse=True):
+            content = _remove_menuentry_block(content, tname, occ)
+            removed.append(f"{tname}（{occ}番目）")
+
+    ok, err = await _write_root_file(GRUB_CUSTOM_FILE, content)
+    if not ok:
+        return {"success": False, "message": f"{GRUB_CUSTOM_FILE}の更新に失敗しました: {err}"}
+
+    upd = await run_cmd(_sudo("update-grub"), timeout=180)
+    tail_lines = [l for l in upd["stdout"].splitlines() if l.strip()][-8:]
+    msg = "削除しました: " + ", ".join(removed) + f"\nバックアップ: {bak}"
+    msg += "\nupdate-grub 完了" if upd["returncode"] == 0 else "\n警告: update-grubでエラーが発生しました"
+    return {"success": True, "message": msg, "output": "\n".join(tail_lines)}
+
+
+@app.post("/api/grub/cleanup-backups")
+async def grub_cleanup_backups():
+    """Remove stale 40_custom.bak.* files from /etc/grub.d (they resurrect deleted entries)."""
+    stales = await _stale_grub_backups()
+    if not stales:
+        return {"success": True, "message": "削除すべき古いバックアップはありません"}
+    files = " ".join(shlex.quote(f) for f in stales)
+    res = await run_cmd(_sudo(f"rm -f {files}"))
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"削除に失敗しました: {res['stderr']}"}
+    return {"success": True, "message": f"{len(stales)}件の古いバックアップを削除しました"}
 
 
 # ============================================================

@@ -34,6 +34,8 @@ function switchTab(tab) {
     loadWifiStatus();
   } else if (tab === 'disks') {
     loadDisks();
+  } else if (tab === 'grub') {
+    loadGrub();
   }
 }
 
@@ -1553,12 +1555,272 @@ async function deleteLv(vgName, lvName) {
   }
 }
 
+// --- GRUB ---
+let grubPartitions = [];
+let grubIsoResult = null;
+
+async function loadGrub() {
+  const statusMsg = document.getElementById('grub-status-msg');
+  try {
+    const resp = await fetch('/api/grub/info');
+    const data = await resp.json();
+    renderGrubInfo(data);
+  } catch (e) {
+    statusMsg.className = 'status-msg show error';
+    statusMsg.textContent = `GRUB情報取得エラー: ${e.message}`;
+  }
+  loadGrubPartitions();
+}
+
+function renderGrubInfo(data) {
+  // Current settings
+  const s = data.settings || {};
+  const rfBadge = s.recordfail === '1'
+    ? '<span class="badge badge-warn">1（残存）</span>'
+    : '<span class="badge badge-active">なし</span>';
+  document.getElementById('grub-settings-container').innerHTML = `
+    <table class="proc-table" style="max-width:620px;">
+      <tbody>
+        <tr><td style="width:40%;color:var(--text-muted);">設定ファイル</td><td>${escapeHtml(data.cfg_path || '見つかりません')}</td></tr>
+        <tr><td style="color:var(--text-muted);">GRUB_DEFAULT</td><td><b>${escapeHtml(s.default ?? '未設定')}</b></td></tr>
+        <tr><td style="color:var(--text-muted);">GRUB_TIMEOUT</td><td><b>${escapeHtml(s.timeout ?? '未設定')}</b> 秒</td></tr>
+        <tr><td style="color:var(--text-muted);">saved_entry</td><td>${escapeHtml(s.saved_entry || '（なし）')}</td></tr>
+        <tr><td style="color:var(--text-muted);">next_entry</td><td>${escapeHtml(s.next_entry || '（なし）')}</td></tr>
+        <tr><td style="color:var(--text-muted);">recordfail</td><td>${rfBadge}</td></tr>
+      </tbody>
+    </table>`;
+
+  // Entry list
+  const typeLabel = { toplevel: 'エントリー', submenu_header: 'サブメニュー', sub_entry: '└ 子エントリ' };
+  const rows = (data.entries || []).map((e, i) => {
+    const indent = e.class === 'sub_entry' ? '&nbsp;&nbsp;&nbsp;&nbsp;' : '';
+    const srcBadge = e.source === 'custom'
+      ? '<span class="badge badge-active">custom</span>'
+      : '<span class="badge badge-other">auto</span>';
+    const delBtn = (e.source === 'custom' && e.class !== 'submenu_header')
+      ? `<button class="btn btn-sm btn-danger" onclick="deleteGrubEntry(${i}, '${escapeJs(e.name)}')" title="40_customから削除">削除</button>`
+      : '';
+    return `<tr>
+      <td>${i}</td>
+      <td>${escapeHtml(e.grub_id)}</td>
+      <td>${typeLabel[e.class] || escapeHtml(e.class)}</td>
+      <td>${srcBadge}</td>
+      <td>${indent}${escapeHtml(e.name)}</td>
+      <td>${delBtn}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('grub-entries-container').innerHTML =
+    (!data.entries || data.entries.length === 0)
+      ? '<p class="muted">menuentryが見つかりませんでした。</p>'
+      : `<table class="proc-table">
+          <thead><tr><th>No.</th><th>GRUB ID</th><th>種別</th><th>出所</th><th>エントリー名</th><th>操作</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+
+  // Stale backups in /etc/grub.d
+  const staleEl = document.getElementById('grub-stale-backups');
+  if (data.stale_backups && data.stale_backups.length > 0) {
+    staleEl.style.display = 'block';
+    staleEl.innerHTML = '/etc/grub.d/に古いバックアップがあります（削除したエントリーが復活する原因）:<br>' +
+      data.stale_backups.map(b => escapeHtml(b)).join('<br>') +
+      ' <button class="btn btn-sm btn-danger" onclick="cleanupGrubBackups()" style="margin-top:0.4rem;">古いバックアップを削除</button>';
+  } else {
+    staleEl.style.display = 'none';
+  }
+
+  // EFI entries
+  const efiEl = document.getElementById('grub-efi-container');
+  if (!data.efi || data.efi.length === 0) {
+    efiEl.innerHTML = '<p class="muted">efibootmgrが利用できないか、EFIブートエントリーがありません。</p>';
+  } else {
+    efiEl.innerHTML = `<table class="proc-table" style="max-width:760px;"><tbody>` +
+      data.efi.map(e =>
+        `<tr><td>${e.active ? '<span class="text-success">●</span>' : '<span class="muted">○</span>'} ${escapeHtml(e.text)}</td></tr>`
+      ).join('') +
+      '</tbody></table>';
+  }
+}
+
+async function loadGrubPartitions() {
+  try {
+    const resp = await fetch('/api/grub/partitions');
+    const data = await resp.json();
+    grubPartitions = data.partitions || [];
+    const sel = document.getElementById('grub-part-select');
+    if (grubPartitions.length === 0) {
+      sel.innerHTML = '<option value="">対象のパーティションがありません</option>';
+      return;
+    }
+    sel.innerHTML = grubPartitions.map((p, i) => {
+      const warn = p.supported ? '' : ' ⚠';
+      const mp = p.mountpoint ? ` / ${p.mountpoint}` : '';
+      return `<option value="${i}">${escapeHtml(p.name)} (${escapeHtml(p.size)}, ${escapeHtml(p.fstype || '不明')}${escapeHtml(mp)})${warn}</option>`;
+    }).join('');
+  } catch (e) {
+    console.error('GRUB partitions load error:', e);
+  }
+}
+
+function selectedGrubPartition() {
+  const sel = document.getElementById('grub-part-select');
+  return grubPartitions[parseInt(sel.value)] || null;
+}
+
+async function scanGrubIsos() {
+  const p = selectedGrubPartition();
+  const listEl = document.getElementById('grub-iso-list');
+  const statusEl = document.getElementById('grub-add-status');
+  if (!p) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'パーティションを選択してください。';
+    return;
+  }
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> ISOファイルを検索中... (マウントとカーネル自動検出のため時間がかかる場合があります)';
+  listEl.innerHTML = '';
+  document.getElementById('btn-grub-add').style.display = 'none';
+
+  try {
+    const resp = await fetch('/api/grub/isos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: p.name }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.error || 'ISO検索に失敗しました';
+      return;
+    }
+    statusEl.className = 'status-msg';
+    grubIsoResult = data;
+    if (data.isos.length === 0) {
+      listEl.innerHTML = '<p class="muted">ISOファイルが見つかりませんでした。</p>';
+      return;
+    }
+    listEl.innerHTML = `<p class="muted" style="margin-bottom:0.5rem;">デバイス: ${escapeHtml(data.device)} | UUID: ${escapeHtml(data.uuid || '（なし）')} — 追加するISOにチェックを入れてください（vmlinuz/initrdは編集可）:</p>` +
+      data.isos.map((iso, i) => `
+        <div class="package-item" style="flex-wrap:wrap;gap:0.5rem;">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;flex:1;min-width:220px;">
+            <input type="checkbox" class="grub-iso-check" data-idx="${i}">
+            <span>
+              <b>${escapeHtml(iso.path)}</b> <span class="muted">(${escapeHtml(iso.size)})</span><br>
+              <span class="muted" style="font-size:0.72rem;">起動方式: ${iso.boot_type === 'UNKNOWN' || iso.vmlinuz === 'UNKNOWN' ? '<span class="text-warn">要手動入力</span>' : escapeHtml(iso.boot_type)}</span>
+            </span>
+          </label>
+          <div style="display:flex;gap:0.35rem;font-size:0.72rem;">
+            <input type="text" class="grub-iso-vmlinuz" data-idx="${i}" value="${escapeHtml(iso.vmlinuz)}" placeholder="/casper/vmlinuz" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
+            <input type="text" class="grub-iso-initrd" data-idx="${i}" value="${escapeHtml(iso.initrd)}" placeholder="/casper/initrd" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
+          </div>
+        </div>`).join('');
+    document.getElementById('btn-grub-add').style.display = 'inline-block';
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function submitGrubAdd() {
+  const p = selectedGrubPartition();
+  if (!p || !grubIsoResult) return;
+
+  const checks = Array.from(document.querySelectorAll('.grub-iso-check:checked'));
+  if (checks.length === 0) {
+    showStatus('追加するISOを選択してください', 'error');
+    return;
+  }
+
+  const isos = checks.map(c => {
+    const idx = c.dataset.idx;
+    return {
+      path: grubIsoResult.isos[idx].path,
+      vmlinuz: document.querySelector(`.grub-iso-vmlinuz[data-idx="${idx}"]`).value.trim(),
+      initrd: document.querySelector(`.grub-iso-initrd[data-idx="${idx}"]`).value.trim(),
+      boot_type: grubIsoResult.isos[idx].boot_type,
+    };
+  });
+
+  if (isos.some(i => !i.vmlinuz.startsWith('/') || !i.initrd.startsWith('/'))) {
+    showStatus('vmlinuz/initrdのパスは「/」で始まる必要があります', 'error');
+    return;
+  }
+
+  const names = isos.map(i => i.path).join('\n');
+  if (!confirm(`以下のISOループブートエントリーを追加しますか？\n\n${names}\n\n追加後、update-grubが実行されます。`)) return;
+
+  const statusEl = document.getElementById('grub-add-status');
+  const btn = document.getElementById('btn-grub-add');
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> エントリーを追加中... (update-grubに数十秒かかる場合があります)';
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/grub/entries/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: p.name, isos }),
+    });
+    const data = await resp.json();
+    btn.disabled = false;
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = data.message;
+    if (data.success) {
+      showStatus('GRUBエントリーを追加しました', 'success');
+      grubIsoResult = null;
+      document.getElementById('grub-iso-list').innerHTML = '';
+      document.getElementById('btn-grub-add').style.display = 'none';
+      loadGrub();
+    }
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function deleteGrubEntry(index, name) {
+  if (!confirm(`エントリー「${name}」を削除しますか？\n40_customから削除され、update-grubが実行されます。\n（バックアップは ${'/root/grub-backups/'} に保存されます）`)) return;
+  try {
+    const resp = await fetch('/api/grub/entries/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ indices: [index] }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus('エントリーを削除しました', 'success');
+    } else {
+      showStatus(data.message || '削除に失敗しました', 'error');
+    }
+    loadGrub();
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+async function cleanupGrubBackups() {
+  if (!confirm('/etc/grub.d/内の古い40_customバックアップファイルを削除しますか？')) return;
+  try {
+    const resp = await fetch('/api/grub/cleanup-backups', { method: 'POST' });
+    const data = await resp.json();
+    showStatus(data.message, data.success ? 'success' : 'error');
+    loadGrub();
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
 // --- Helpers ---
 function escapeHtml(str) {
   if (!str) return '';
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function escapeJs(str) {
+  if (!str) return '';
+  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 function showStatus(msg, type) {
