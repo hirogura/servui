@@ -960,50 +960,17 @@ async function openSelfcode() {
       switchTab('terminal');
       showStatus('selfcodeはインストール済みです。URLを取得できませんでした。', 'info');
     } else {
-      // Not installed - run install via backend API
+      // Not installed - send install commands via WebSocket terminal
       switchTab('terminal');
-      showStatus('selfcodeをインストール中... 処理に時間がかかる場合があります。', 'info');
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data: '\r\n' }));
-      }
-
-      try {
-        const installResp = await fetch('/api/selfcode/install', { method: 'POST' });
-        const result = await installResp.json();
-
+      showStatus('selfcodeをインストール中... ターミナルで進捗を確認できます。', 'info');
+      setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          if (result.output) {
-            const lines = result.output.split('\n');
-            for (const line of lines) {
-              ws.send(JSON.stringify({ type: 'input', data: line + '\n' }));
-            }
-          }
-          if (result.errors) {
-            ws.send(JSON.stringify({ type: 'input', data: '\n[ERRORS]\n' }));
-            const errLines = result.errors.split('\n');
-            for (const line of errLines) {
-              ws.send(JSON.stringify({ type: 'input', data: line + '\n' }));
-            }
-          }
-        }
-
-        if (result.success) {
-          showStatus('selfcodeのインストールが完了しました！', 'success');
-          // Recheck status and open if possible
-          setTimeout(async () => {
-            const recheck = await fetch('/api/selfcode/status');
-            const recheckData = await recheck.json();
-            if (recheckData.installed && recheckData.url) {
-              window.open(recheckData.url, '_blank');
-            }
-          }, 2000);
+          const installCmd = 'sudo apt install -y git curl nodejs npm && curl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh && sudo bash /tmp/install-selfcode.sh -y\n';
+          ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
-          showStatus('selfcodeのインストールに失敗しました。詳細はターミナルを確認してください。', 'error');
+          showStatus('ターミナルに接続できません', 'error');
         }
-      } catch (e) {
-        showStatus(`selfcodeインストールエラー: ${e.message}`, 'error');
-      }
+      }, 500);
     }
   } catch (e) {
     showStatus(`selfcode確認エラー: ${e.message}`, 'error');

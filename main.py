@@ -1047,55 +1047,6 @@ async def selfcode_status():
 
 
 
-@app.post("/api/selfcode/install")
-async def selfcode_install():
-    """Install selfcode by running prerequisite commands and install script."""
-    # Step 1: Install prerequisites
-    r1 = await run_cmd(
-        _sudo("apt-get update -qq"),
-        timeout=120,
-    )
-    r2 = await run_cmd(
-        _sudo("apt-get install -y git curl nodejs npm"),
-        timeout=180,
-    )
-    # Step 2: Download install script
-    r3 = await run_cmd(
-        "curl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh",
-        timeout=60,
-    )
-    # Step 3: Run install script (use -y to skip interactive prompts,
-    #          because subprocess has no TTY and 'read' fails under set -e)
-    r4 = await run_cmd(
-        _sudo("bash /tmp/install-selfcode.sh -y"),
-        timeout=600,
-    )
-
-    success = all(r["returncode"] == 0 for r in [r1, r2, r3, r4])
-    combined_stdout = "\n".join([
-        "=== apt update ===",
-        r1["stdout"],
-        "=== apt install prerequisites ===",
-        r2["stdout"],
-        "=== download install script ===",
-        r3["stdout"],
-        "=== run install script ===",
-        r4["stdout"],
-    ])
-    errors = "\n".join(filter(None, [
-        r1["stderr"].strip(),
-        r2["stderr"].strip(),
-        r3["stderr"].strip(),
-        r4["stderr"].strip(),
-    ]))
-
-    return {
-        "success": success,
-        "output": combined_stdout,
-        "errors": errors,
-    }
-
-
 @app.get("/api/easylxd/status")
 
 async def easylxd_status():
