@@ -1474,6 +1474,135 @@ async def disks_lv_resize(req: Request):
     return {"success": True, "message": msg}
 
 
+@app.post("/api/disks/partition/delete")
+async def disks_partition_delete(req: Request):
+    """Delete a partition from a disk."""
+    data = await req.json()
+    device_name = data.get("device", "").strip()
+
+    if not device_name:
+        raise HTTPException(status_code=400, detail="device is required")
+
+    device_path = f"/dev/{device_name}"
+
+    # Verify it's a partition
+    type_check = await run_cmd(f"lsblk -dno TYPE {device_path} 2>/dev/null", timeout=5)
+    dev_type = type_check["stdout"].strip()
+    if dev_type not in ("part", "lvm"):
+        return {"success": False, "message": f"{device_path} はパーティションではありません"}
+
+    # Check if mounted
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {device_path} 2>/dev/null", timeout=5)
+    mountpoint = mp_res["stdout"].strip()
+    if mountpoint:
+        return {"success": False, "message": f"マウント中のパーティションは削除できません（{mountpoint}）。\n先にアンマウントしてください。"}
+
+    # Get parent disk
+    parent_res = await run_cmd(f"lsblk -dno PKNAME {device_path} 2>/dev/null", timeout=5)
+    parent_disk = parent_res["stdout"].strip()
+    if not parent_disk:
+        return {"success": False, "message": "親ディスクが見つかりません"}
+
+    # Check if it's an LVM PV - refuse deletion if so
+    pv_check = await run_cmd(f"pvs --noheadings -o vg_name {device_path} 2>/dev/null", timeout=5)
+    if pv_check["returncode"] == 0 and pv_check["stdout"].strip():
+        return {"success": False, "message": f"このパーティションはLVM物理ボリュームとして使用中です（VG: {pv_check['stdout'].strip()}）。LVを先に削除してください。"}
+
+    # Get partition number
+    part_num = ""
+    for ch in reversed(device_name):
+        if ch.isdigit():
+            part_num = ch + part_num
+        else:
+            break
+    if not part_num:
+        return {"success": False, "message": "パーティション番号を取得できませんでした"}
+
+    disk_path = f"/dev/{parent_disk}"
+
+    # Delete partition using sfdisk
+    res = await run_cmd(_sudo(f"sfdisk --delete {disk_path} {part_num}"), timeout=15)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"パーティション削除に失敗しました: {res['stderr']}"}
+
+    # Re-read partition table
+    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+
+    return {"success": True, "message": f"パーティション {device_name} を削除しました"}
+
+
+@app.post("/api/disks/disk/wipe")
+async def disks_disk_wipe(req: Request):
+    """Delete all partitions from a disk."""
+    data = await req.json()
+    disk_name = data.get("device", "").strip()
+
+    if not disk_name:
+        raise HTTPException(status_code=400, detail="device is required")
+
+    disk_path = f"/dev/{disk_name}"
+
+    # Verify it's a disk
+    type_check = await run_cmd(f"lsblk -dno TYPE {disk_path} 2>/dev/null", timeout=5)
+    if type_check["stdout"].strip() != "disk":
+        return {"success": False, "message": f"{disk_path} はディスクデバイスではありません"}
+
+    # Check if any partition is mounted
+    mp_check = await run_cmd(f"findmnt -n -o TARGET,SOURCE 2>/dev/null | grep '{disk_path}'", timeout=5)
+    if mp_check["stdout"].strip():
+        return {"success": False, "message": "マウント中のパーティションが含まれています。先にすべてアンマウントしてください。"}
+
+    # Check if any partition is an LVM PV
+    pv_check = await run_cmd(f"pvs --noheadings -o pv_name,vg_name 2>/dev/null | grep '{disk_path}'", timeout=5)
+    if pv_check["stdout"].strip():
+        return {"success": False, "message": f"LVM物理ボリュームが含まれています。先にVGを削除してください。\n{pv_check['stdout'].strip()}"}
+
+    # Delete all partitions
+    res = await run_cmd(_sudo(f"sfdisk --delete {disk_path}"), timeout=15)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"パーティション削除に失敗しました: {res['stderr']}"}
+
+    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+
+    return {"success": True, "message": f"ディスク {disk_name} の全パーティションを削除しました"}
+
+
+@app.post("/api/disks/lv/delete")
+async def disks_lv_delete(req: Request):
+    """Delete a logical volume."""
+    data = await req.json()
+    vg_name = data.get("vg_name", "").strip()
+    lv_name = data.get("lv_name", "").strip()
+
+    if not vg_name or not lv_name:
+        raise HTTPException(status_code=400, detail="vg_name and lv_name are required")
+
+    lv_path = f"/dev/{vg_name}/{lv_name}"
+
+    # Check if LV exists
+    check = await run_cmd(f"test -b {lv_path}", timeout=5)
+    if check["returncode"] != 0:
+        return {"success": False, "message": f"論理ボリューム {lv_path} が見つかりません"}
+
+    # Check if mounted
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {lv_path} 2>/dev/null", timeout=5)
+    mountpoint = mp_res["stdout"].strip()
+    if mountpoint:
+        return {"success": False, "message": f"マウント中の論理ボリュームは削除できません（{mountpoint}）。\n先にアンマウントしてください。"}
+
+    # Check if it's swap
+    swap_res = await run_cmd(f"swapon --show=NAME --noheadings 2>/dev/null | grep -q '{lv_path}'", timeout=5)
+    if swap_res["returncode"] == 0:
+        await run_cmd(_sudo(f"swapoff {lv_path}"), timeout=15)
+
+    # Delete LV
+    res = await run_cmd(_sudo(f"lvremove -f {lv_path}"), timeout=15)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"論理ボリューム削除に失敗しました: {res['stderr']}"}
+
+    return {"success": True, "message": f"論理ボリューム {lv_name} を削除しました"}
+
+
 # ============================================================
 # 7. serv-UI Management & System Control
 # ============================================================

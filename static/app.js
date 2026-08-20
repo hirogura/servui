@@ -877,6 +877,9 @@ function renderLvmInfo(dev) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
       </button>`;
     }
+    lvBtns += `<button class="btn btn-sm btn-danger" onclick="deleteLv('${escapeHtml(vgName)}','${escapeHtml(lv.name)}')" title="論理ボリュームを削除" style="margin-left:0.15rem;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+    </button>`;
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid var(--border);">
       <div style="display:flex;align-items:center;gap:0.4rem;">
         <span style="width:8px;height:8px;border-radius:2px;background:${color};flex-shrink:0;"></span>
@@ -958,12 +961,28 @@ function renderDiskDevice(dev, depth) {
     }
   }
 
+  // Delete button for partitions
+  let deleteBtn = '';
+  if (isPart && !isLvmMember) {
+    deleteBtn = `<button class="btn btn-sm btn-danger" onclick="deletePartition('${escapeHtml(dev.name)}')" title="パーティションを削除" style="margin-left:0.25rem;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+    </button>`;
+  }
+
   // Create button for disks with free space
   let createBtn = '';
   if (isDisk && dev.free_bytes > 0) {
     createBtn = `<button class="btn btn-sm btn-success" onclick="openDiskCreateModal('${escapeHtml(dev.name)}',${dev.size_bytes || 0},${dev.free_bytes || 0})" title="空き領域にパーティションを作成">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       作成
+    </button>`;
+  }
+
+  // Delete button for disks (wipe all partitions)
+  let diskDeleteBtn = '';
+  if (isDisk) {
+    diskDeleteBtn = `<button class="btn btn-sm btn-danger" onclick="wipeDisk('${escapeHtml(dev.name)}')" title="ディスクの全パーティションを削除" style="margin-left:0.25rem;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>`;
   }
 
@@ -1009,7 +1028,7 @@ function renderDiskDevice(dev, depth) {
           <span class="badge ${typeBadgeClass}" style="font-size:0.7rem;">${typeLabel}</span>${fsLabel}
           ${removableBadge}${readonlyBadge}
         </div>
-        <div class="btn-group">${createBtn}${actionBtn}</div>
+        <div class="btn-group">${createBtn}${diskDeleteBtn}${actionBtn}${deleteBtn}</div>
       </div>
       ${layoutBar}
       ${lvmHtml}
@@ -1435,6 +1454,72 @@ async function submitLvResize() {
     submitBtn.disabled = false;
     statusEl.className = 'status-msg show error';
     statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Delete Disk (wipe all partitions) ---
+async function wipeDisk(diskName) {
+  if (!confirm(`ディスク '/dev/${diskName}' の全パーティションを削除しますか？\n\n⚠️ このディスク上のすべてのデータが失われます。`)) return;
+
+  try {
+    const resp = await fetch('/api/disks/disk/wipe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: diskName }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus(data.message, 'success');
+      loadDisks();
+    } else {
+      showStatus(data.message, 'error');
+    }
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+// --- Delete Partition ---
+async function deletePartition(deviceName) {
+  if (!confirm(`パーティション '/dev/${deviceName}' を削除しますか？\n\nデータは完全に失われます。`)) return;
+
+  try {
+    const resp = await fetch('/api/disks/partition/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: deviceName }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus(data.message, 'success');
+      loadDisks();
+    } else {
+      showStatus(data.message, 'error');
+    }
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+// --- Delete LV ---
+async function deleteLv(vgName, lvName) {
+  if (!confirm(`論理ボリューム '${lvName}' (VG: ${vgName}) を削除しますか？\n\nデータは完全に失われます。`)) return;
+
+  try {
+    const resp = await fetch('/api/disks/lv/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vg_name: vgName, lv_name: lvName }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus(data.message, 'success');
+      loadDisks();
+    } else {
+      showStatus(data.message, 'error');
+    }
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
   }
 }
 
