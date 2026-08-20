@@ -1743,6 +1743,9 @@ async def shutdown_system():
 # ============================================================
 GRUB_CUSTOM_FILE = "/etc/grub.d/40_custom"
 GRUB_BACKUP_DIR = "/root/grub-backups"
+GRUB_ONCE_BAK = "/var/tmp/grub-once-default-grub.bak"
+GRUB_ONCE_RESTORE = "/usr/local/sbin/grub-menu-once-restore.sh"
+GRUB_ONCE_UNIT = "/etc/systemd/system/grub-menu-once-restore.service"
 _GRUB_ENTRY_RE = re.compile(r"""^\s*(?:menuentry|submenu)\s+['"]([^'"]*)['"]""")
 _ISO_BOOT_CANDIDATES = [
     ("casper/vmlinuz", "casper/initrd", "casper"),
@@ -1897,6 +1900,7 @@ async def grub_info():
         "settings": await _grub_settings(),
         "efi": await _efi_entries(),
         "stale_backups": await _stale_grub_backups(),
+        "next_menu_armed": os.path.isfile(GRUB_ONCE_BAK),
     }
 
 
@@ -2318,6 +2322,113 @@ async def grub_cleanup_backups():
     if res["returncode"] != 0:
         return {"success": False, "message": f"削除に失敗しました: {res['stderr']}"}
     return {"success": True, "message": f"{len(stales)}件の古いバックアップを削除しました"}
+
+
+_GRUB_ONCE_RESTORE_SCRIPT = """#!/bin/bash
+set -euo pipefail
+BAK="/var/tmp/grub-once-default-grub.bak"
+if [ -f "$BAK" ]; then
+  cp "$BAK" /etc/default/grub
+  if update-grub >/dev/null 2>&1; then
+    rm -f "$BAK"
+  fi
+fi
+if [ ! -f "$BAK" ]; then
+  systemctl disable grub-menu-once-restore.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/grub-menu-once-restore.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+"""
+
+
+def _grub_once_unit_content() -> str:
+    return (
+        "[Unit]\n"
+        "Description=Restore GRUB default settings after one-time menu display\n"
+        "After=local-fs.target\n"
+        f"ConditionPathExists={GRUB_ONCE_BAK}\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={GRUB_ONCE_RESTORE}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+
+@app.post("/api/grub/next-boot-menu")
+async def grub_next_boot_menu():
+    """Show the GRUB menu only at next boot (ports next-grubmenu.sh).
+
+    Backs up /etc/default/grub, sets GRUB_TIMEOUT_STYLE=menu / GRUB_TIMEOUT=5,
+    runs update-grub, and installs a oneshot systemd unit that restores the
+    original settings after the next boot.
+    """
+    w = await run_cmd("which update-grub")
+    if w["returncode"] != 0:
+        return {"success": False, "message": "update-grub が見つかりません。この環境では利用できません。"}
+
+    # Backup current settings (keep the first backup so original settings are preserved)
+    if not os.path.isfile(GRUB_ONCE_BAK):
+        bres = await run_cmd(
+            _sudo(f"cp {shlex.quote('/etc/default/grub')} {shlex.quote(GRUB_ONCE_BAK)}")
+        )
+        if bres["returncode"] != 0:
+            return {"success": False, "message": f"/etc/default/grubのバックアップに失敗しました: {bres['stderr']}"}
+
+    # Rewrite GRUB_TIMEOUT_STYLE / GRUB_TIMEOUT
+    txt = await _read_text("/etc/default/grub")
+    if txt is None:
+        return {"success": False, "message": "/etc/default/grub を読み取れませんでした"}
+    new_lines = []
+    has_style = False
+    has_timeout = False
+    for line in txt.split("\n"):
+        if line.startswith("GRUB_TIMEOUT_STYLE="):
+            new_lines.append("GRUB_TIMEOUT_STYLE=menu")
+            has_style = True
+        elif line.startswith("GRUB_TIMEOUT="):
+            new_lines.append("GRUB_TIMEOUT=5")
+            has_timeout = True
+        else:
+            new_lines.append(line)
+    if not has_style:
+        new_lines.append("GRUB_TIMEOUT_STYLE=menu")
+    if not has_timeout:
+        new_lines.append("GRUB_TIMEOUT=5")
+    content = "\n".join(new_lines)
+    if not content.endswith("\n"):
+        content += "\n"
+    ok, err = await _write_root_file("/etc/default/grub", content)
+    if not ok:
+        return {"success": False, "message": f"/etc/default/grub の変更に失敗しました: {err}"}
+
+    upd = await run_cmd(_sudo("update-grub"), timeout=180)
+    if upd["returncode"] != 0:
+        await run_cmd(_sudo(f"cp {shlex.quote(GRUB_ONCE_BAK)} {shlex.quote('/etc/default/grub')}"))
+        await run_cmd(_sudo(f"rm -f {shlex.quote(GRUB_ONCE_BAK)}"))
+        return {
+            "success": False,
+            "message": "update-grubに失敗したため、/etc/default/grub を元に戻しました",
+        }
+
+    # Install restore script and systemd unit
+    ok1, err1 = await _write_root_file(GRUB_ONCE_RESTORE, _GRUB_ONCE_RESTORE_SCRIPT)
+    ok2, err2 = await _write_root_file(GRUB_ONCE_UNIT, _grub_once_unit_content())
+    if not (ok1 and ok2):
+        return {"success": False, "message": f"復元スクリプト/unitの作成に失敗しました: {err1} {err2}"}
+    await run_cmd(_sudo(f"chmod 700 {shlex.quote(GRUB_ONCE_RESTORE)}"))
+    await run_cmd(_sudo("systemctl daemon-reload"))
+    en = await run_cmd(_sudo("systemctl enable grub-menu-once-restore.service"))
+
+    msg = (
+        "設定完了。次回の起動時のみ GRUB メニューが 5 秒間表示されます。\n"
+        "その次の起動からは元の設定（メニュー非表示）に自動で戻ります。"
+    )
+    if en["returncode"] != 0:
+        msg += "\n警告: systemdユニットの有効化に失敗しました: " + en["stderr"].strip()
+    return {"success": True, "message": msg}
 
 
 # ============================================================

@@ -435,10 +435,16 @@
     <section id="tab-grub" class="tab-content">
       <div class="terminal-header">
         <h1>GRUB編集</h1>
-        <button class="btn btn-secondary" onclick="loadGrub()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-          再読み込み
-        </button>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btn-grub-next-menu" onclick="armNextBootMenu()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            次回PC起動時にGRUBメニューを表示
+          </button>
+          <button class="btn btn-secondary" onclick="loadGrub()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            再読み込み
+          </button>
+        </div>
       </div>
       <div id="grub-status-msg" class="status-msg"></div>
 
@@ -481,6 +487,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

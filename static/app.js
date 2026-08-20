@@ -1573,6 +1573,20 @@ async function loadGrub() {
 }
 
 function renderGrubInfo(data) {
+  // Next-boot menu button state
+  const nextBtn = document.getElementById('btn-grub-next-menu');
+  if (nextBtn) {
+    if (data.next_menu_armed) {
+      nextBtn.classList.remove('btn-primary');
+      nextBtn.classList.add('btn-success');
+      nextBtn.textContent = '設定済み（次回起動時のみメニュー表示）';
+    } else {
+      nextBtn.classList.add('btn-primary');
+      nextBtn.classList.remove('btn-success');
+      nextBtn.textContent = '次回PC起動時にGRUBメニューを表示';
+    }
+  }
+
   // Current settings
   const s = data.settings || {};
   const rfBadge = s.recordfail === '1'
@@ -1796,6 +1810,31 @@ async function deleteGrubEntry(index, name) {
   } catch (e) {
     showStatus(`エラー: ${e.message}`, 'error');
   }
+}
+
+async function armNextBootMenu() {
+  const btn = document.getElementById('btn-grub-next-menu');
+  if (!confirm('次回のPC起動時のみGRUBメニューを5秒間表示します。\nその次の起動からは元の設定に自動的に戻ります。\n\nよろしいですか？')) return;
+
+  const statusMsg = document.getElementById('grub-status-msg');
+  btn.disabled = true;
+  statusMsg.className = 'status-msg show info';
+  statusMsg.innerHTML = '<span class="spinner"></span> 設定中... (update-grubを実行するため数十秒かかる場合があります)';
+
+  try {
+    const resp = await fetch('/api/grub/next-boot-menu', { method: 'POST' });
+    const data = await resp.json();
+    statusMsg.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusMsg.textContent = data.message;
+    if (data.success) {
+      showStatus('次回起動時にGRUBメニューが表示されます', 'success');
+    }
+  } catch (e) {
+    statusMsg.className = 'status-msg show error';
+    statusMsg.textContent = `エラー: ${e.message}`;
+  }
+  btn.disabled = false;
+  loadGrub();
 }
 
 async function cleanupGrubBackups() {
