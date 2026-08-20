@@ -1065,6 +1065,16 @@ document.addEventListener('DOMContentLoaded', () => {
         e.target.value === 'persist' ? 'block' : 'none';
     });
   });
+
+  document.getElementById('disk-create-persistent').addEventListener('change', (e) => {
+    document.getElementById('disk-create-persistent-warn').style.display =
+      e.target.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('lv-create-persistent').addEventListener('change', (e) => {
+    document.getElementById('lv-create-persistent-warn').style.display =
+      e.target.checked ? 'block' : 'none';
+  });
 });
 
 async function submitDiskMount() {
@@ -1164,6 +1174,8 @@ function openDiskCreateModal(diskName, totalBytes, freeBytes) {
   document.getElementById('disk-create-size-max').textContent = `${freeMb} MB`;
   document.getElementById('disk-create-fstype').value = 'ext4';
   document.getElementById('disk-create-mount').value = '';
+  document.getElementById('disk-create-persistent').checked = false;
+  document.getElementById('disk-create-persistent-warn').style.display = 'none';
   document.getElementById('disk-create-status').className = 'status-msg';
   document.getElementById('disk-create-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('disk-create-size').focus(), 100);
@@ -1181,6 +1193,7 @@ async function submitDiskCreate() {
   const sizeMb = parseInt(document.getElementById('disk-create-size').value) || 0;
   const fstype = document.getElementById('disk-create-fstype').value;
   const mountPoint = document.getElementById('disk-create-mount').value.trim();
+  const persistent = document.getElementById('disk-create-persistent').checked;
   const statusEl = document.getElementById('disk-create-status');
   const submitBtn = document.getElementById('btn-disk-create-submit');
 
@@ -1193,6 +1206,12 @@ async function submitDiskCreate() {
   if (fstype === 'swap' && mountPoint) {
     statusEl.className = 'status-msg show error';
     statusEl.textContent = 'swapにはマウント先パスを指定できません。';
+    return;
+  }
+
+  if (persistent && !mountPoint) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = '永続マウントを指定する場合はマウント先パスを入力してください。';
     return;
   }
 
@@ -1212,6 +1231,7 @@ async function submitDiskCreate() {
         size_sectors: sizeSectors,
         fstype: fstype,
         mount_point: mountPoint,
+        persistent: persistent,
       }),
     });
     const data = await resp.json();
@@ -1312,6 +1332,8 @@ function openLvCreateModal(vgName, vgFree) {
   document.getElementById('lv-create-size').value = '';
   document.getElementById('lv-create-fstype').value = 'ext4';
   document.getElementById('lv-create-mount').value = '';
+  document.getElementById('lv-create-persistent').checked = false;
+  document.getElementById('lv-create-persistent-warn').style.display = 'none';
   document.getElementById('lv-create-status').className = 'status-msg';
   document.getElementById('lv-create-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('lv-create-name').focus(), 100);
@@ -1329,6 +1351,7 @@ async function submitLvCreate() {
   const size = document.getElementById('lv-create-size').value.trim();
   const fstype = document.getElementById('lv-create-fstype').value;
   const mountPoint = document.getElementById('lv-create-mount').value.trim();
+  const persistent = document.getElementById('lv-create-persistent').checked;
   const statusEl = document.getElementById('lv-create-status');
   const submitBtn = document.getElementById('btn-lv-create-submit');
 
@@ -1341,6 +1364,12 @@ async function submitLvCreate() {
   if (fstype === 'swap' && mountPoint) {
     statusEl.className = 'status-msg show error';
     statusEl.textContent = 'swapにはマウント先パスを指定できません。';
+    return;
+  }
+
+  if (persistent && !mountPoint) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = '永続マウントを指定する場合はマウント先パスを入力してください。';
     return;
   }
 
@@ -1360,6 +1389,7 @@ async function submitLvCreate() {
         size: size,
         fstype: fstype,
         mount_point: mountPoint,
+        persistent: persistent,
       }),
     });
     const data = await resp.json();

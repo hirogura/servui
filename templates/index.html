@@ -311,6 +311,14 @@
             <label for="disk-create-mount">マウント先パス (任意)</label>
             <input type="text" id="disk-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
           </div>
+          <div class="form-group" id="disk-create-persistent-group">
+            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+              <input type="checkbox" id="disk-create-persistent"> 永続マウント（/etc/fstabに追加）
+            </label>
+            <div id="disk-create-persistent-warn" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--warning-soft);border-radius:6px;font-size:0.78rem;color:var(--warning);">
+              永続マウントは /etc/fstab にエントリを追加します。再起動後も自動的にマウントされます。
+            </div>
+          </div>
           <div id="disk-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
           <div class="modal-actions">
             <button class="btn btn-secondary" onclick="closeDiskCreateModal()">キャンセル</button>
@@ -373,6 +381,14 @@
           <div class="form-group" id="lv-create-mount-group">
             <label for="lv-create-mount">マウント先パス (任意)</label>
             <input type="text" id="lv-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" id="lv-create-persistent-group">
+            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+              <input type="checkbox" id="lv-create-persistent"> 永続マウント（/etc/fstabに追加）
+            </label>
+            <div id="lv-create-persistent-warn" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--warning-soft);border-radius:6px;font-size:0.78rem;color:var(--warning);">
+              永続マウントは /etc/fstab にエントリを追加します。再起動後も自動的にマウントされます。
+            </div>
           </div>
           <div id="lv-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
           <div class="modal-actions">

@@ -1196,6 +1196,7 @@ async def disks_partition_create(req: Request):
     size_sectors = data.get("size_sectors", 0)
     fstype = data.get("fstype", "ext4").strip()
     mount_point = data.get("mount_point", "").strip()
+    persistent = data.get("persistent", False)
 
     if not disk_name or size_sectors <= 0:
         raise HTTPException(status_code=400, detail="disk and size_sectors are required")
@@ -1263,9 +1264,23 @@ async def disks_partition_create(req: Request):
         if mount_res["returncode"] != 0:
             return {"success": True, "message": f"パーティション {new_part_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": new_part_name}
 
+        if persistent:
+            blkid = await run_cmd(f"blkid -s UUID -o value {new_part_path}", timeout=5)
+            uuid = blkid["stdout"].strip()
+            if uuid:
+                fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
+                add_fstab = await run_cmd(
+                    _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+                    timeout=10,
+                )
+                if add_fstab["returncode"] != 0:
+                    return {"success": True, "message": f"パーティション {new_part_name} を作成しましたが、/etc/fstabへの追加に失敗しました: {add_fstab['stderr']}", "device": new_part_name}
+
     msg = f"パーティション {new_part_name} を作成しました ({fstype})"
     if mount_point:
         msg += f" → {mount_point}"
+    if persistent and mount_point:
+        msg += " (永続マウント)"
     return {"success": True, "message": msg, "device": new_part_name}
 
 
@@ -1400,13 +1415,14 @@ async def disks_lv_create(req: Request):
     size = data.get("size", "").strip()
     fstype = data.get("fstype", "ext4").strip()
     mount_point = data.get("mount_point", "").strip()
+    persistent = data.get("persistent", False)
 
     if not vg_name or not lv_name or not size:
         raise HTTPException(status_code=400, detail="vg_name, lv_name, and size are required")
 
     # Create LV
     lv_path = f"/dev/{vg_name}/{lv_name}"
-    res = await run_cmd(_sudo(f"lvcreate -L {size} -n {lv_name} {vg_name}"), timeout=30)
+    res = await run_cmd(_sudo(f"lvcreate -L {size} -n {lv_name} --yes {vg_name}"), timeout=30)
     if res["returncode"] != 0:
         return {"success": False, "message": f"論理ボリューム作成に失敗しました: {res['stderr']}"}
 
@@ -1430,9 +1446,23 @@ async def disks_lv_create(req: Request):
         if mount_res["returncode"] != 0:
             return {"success": True, "message": f"LV {lv_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": lv_name}
 
+        if persistent:
+            blkid = await run_cmd(f"blkid -s UUID -o value {lv_path}", timeout=5)
+            uuid = blkid["stdout"].strip()
+            if uuid:
+                fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
+                add_fstab = await run_cmd(
+                    _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+                    timeout=10,
+                )
+                if add_fstab["returncode"] != 0:
+                    return {"success": True, "message": f"LV {lv_name} を作成しましたが、/etc/fstabへの追加に失敗しました: {add_fstab['stderr']}", "device": lv_name}
+
     msg = f"LV {lv_name} を作成しました ({fstype}, {size})"
     if mount_point:
         msg += f" → {mount_point}"
+    if persistent and mount_point:
+        msg += " (永続マウント)"
     return {"success": True, "message": msg, "device": lv_name}
 
 
