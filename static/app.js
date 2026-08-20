@@ -809,6 +809,109 @@ function renderDiskLayoutBar(dev) {
     </div>`;
 }
 
+function renderLvmInfo(dev) {
+  const lvm = dev.lvm;
+  const vgName = lvm.vg_name;
+  const vgSize = lvm.vg_size || lvm.pv_size;
+  const vgFree = lvm.vg_free || lvm.pv_free;
+  const lvs = lvm.lvs || [];
+
+  // Build LV layout bar (similar to disk layout bar)
+  const parseSize = (s) => {
+    if (!s) return 0;
+    const m = {'K':1024,'M':1024**2,'G':1024**3,'T':1024**4};
+    s = s.replace(/[<>]/g, '').trim();
+    if (s.slice(-1).toUpperCase() in m) return parseFloat(s) * m[s.slice(-1).toUpperCase()];
+    return parseFloat(s) || 0;
+  };
+
+  const vgTotalBytes = parseSize(vgSize);
+  const vgFreeBytes = parseSize(vgFree);
+  const vgUsedBytes = vgTotalBytes - vgFreeBytes;
+
+  const lvColors = ['#3498db', '#27ae60', '#e67e22', '#8e44ad', '#16a085', '#e74c3c', '#f39c12', '#2c3e50'];
+
+  let segments = [];
+  lvs.forEach((lv, i) => {
+    const lvBytes = parseSize(lv.size);
+    const pct = vgTotalBytes > 0 ? Math.max((lvBytes / vgTotalBytes) * 100, 1) : 0;
+    const color = lvColors[i % lvColors.length];
+    const mountLabel = lv.mountpoint ? ` → ${lv.mountpoint}` : '';
+    segments.push({
+      pct, color,
+      tooltip: `${lv.name}: ${lv.size}${mountLabel}`,
+      name: lv.name, size: lv.size, mountpoint: lv.mountpoint,
+    });
+  });
+
+  if (vgFreeBytes > 0 && vgTotalBytes > 0) {
+    const freePct = Math.max((vgFreeBytes / vgTotalBytes) * 100, 0.3);
+    segments.push({ pct: freePct, color: '#2c2f38', tooltip: `空き: ${vgFree}`, name: '', size: '' });
+  }
+
+  const segmentsHtml = segments.map(s =>
+    `<div class="disk-layout-seg" style="flex:${s.pct};background:${s.color};" title="${escapeHtml(s.tooltip)}">
+      ${s.pct > 5 ? `<span class="disk-layout-seg-label">${escapeHtml(s.name)}<br>${escapeHtml(s.size)}</span>` : ''}
+    </div>`
+  ).join('');
+
+  // LV rows
+  const lvRows = lvs.map((lv, i) => {
+    const color = lvColors[i % lvColors.length];
+    const mountLabel = lv.mountpoint ? `<span class="disk-layout-legend-mount"> → ${escapeHtml(lv.mountpoint)}</span>` : '';
+    const safeLvPath = escapeHtml(lv.path || `${vgName}-${lv.name}`.replace(/-/g, '--'));
+    let lvBtns = '';
+    if (lv.mountpoint) {
+      lvBtns += `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${safeLvPath}','${escapeHtml(lv.mountpoint)}')" title="アンマウント">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>`;
+    } else {
+      const mountDev = lv.path ? lv.path.replace('/dev/', '') : safeLvPath;
+      const fsType = 'ext4';
+      lvBtns += `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${escapeHtml(mountDev)}','${fsType}')" title="マウント">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>`;
+    }
+    if (vgFreeBytes > 0) {
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openLvResizeModal('${escapeHtml(vgName)}','${escapeHtml(lv.name)}','${escapeHtml(lv.size)}','${escapeHtml(vgFree)}')" title="VG空き領域で拡張" style="margin-left:0.15rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+      </button>`;
+    }
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;align-items:center;gap:0.4rem;">
+        <span style="width:8px;height:8px;border-radius:2px;background:${color};flex-shrink:0;"></span>
+        <span style="font-size:0.8rem;font-weight:500;">${escapeHtml(lv.name)}</span>
+        <span style="font-size:0.75rem;color:var(--text-muted);">${escapeHtml(lv.size)}</span>
+        ${mountLabel}
+      </div>
+      <div class="btn-group">${lvBtns}</div>
+    </div>`;
+  }).join('');
+
+  const createLvBtn = vgFreeBytes > 0
+    ? `<button class="btn btn-sm btn-success" onclick="openLvCreateModal('${escapeHtml(vgName)}','${escapeHtml(vgFree)}')" title="論理ボリュームを作成" style="margin-top:0.4rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        LV 作成
+      </button>`
+    : '';
+
+  return `
+    <div style="margin-top:0.6rem;padding:0.6rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:1rem;height:1rem;color:var(--accent);flex-shrink:0;">
+            <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+          </svg>
+          <span style="font-size:0.82rem;font-weight:600;">VG: ${escapeHtml(vgName)}</span>
+          <span style="font-size:0.72rem;color:var(--text-muted);">PV: ${escapeHtml(vgSize)} / 空き: <span class="text-success">${escapeHtml(vgFree)}</span></span>
+        </div>
+        ${createLvBtn}
+      </div>
+      ${segmentsHtml ? `<div class="disk-layout-wrap"><div class="disk-layout-bar" style="height:24px;">${segmentsHtml}</div></div>` : ''}
+      ${lvRows}
+    </div>`;
+}
+
 function renderDiskDevice(dev, depth) {
   const indent = depth * 1.5;
   const isDisk = dev.type === 'disk';
@@ -830,7 +933,8 @@ function renderDiskDevice(dev, depth) {
   const fsLabel = dev.label ? ` <span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.3rem;">${escapeHtml(dev.label)}</span>` : '';
 
   let actionBtn = '';
-  if (isPart && dev.fstype && !dev.readonly) {
+  const isLvmMember = dev.fstype === 'LVM2_member';
+  if (isPart && dev.fstype && !dev.readonly && !isLvmMember) {
     const safeName = escapeHtml(dev.name);
     const safeMp = escapeHtml(dev.mountpoint || '');
     const safeFs = escapeHtml(dev.fstype);
@@ -845,6 +949,22 @@ function renderDiskDevice(dev, depth) {
         マウント
       </button>`;
     }
+    if (dev.extendable) {
+      const maxMb = Math.floor((dev.max_extend_bytes || 0) / (1024 * 1024));
+      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="openDiskExtendModal('${safeName}',${dev.size_bytes || 0},${dev.max_extend_bytes || 0})" title="隣接空き領域で拡張" style="margin-left:0.25rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+        拡張
+      </button>`;
+    }
+  }
+
+  // Create button for disks with free space
+  let createBtn = '';
+  if (isDisk && dev.free_bytes > 0) {
+    createBtn = `<button class="btn btn-sm btn-success" onclick="openDiskCreateModal('${escapeHtml(dev.name)}',${dev.size_bytes || 0},${dev.free_bytes || 0})" title="空き領域にパーティションを作成">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      作成
+    </button>`;
   }
 
   let infoRows = '';
@@ -873,6 +993,7 @@ function renderDiskDevice(dev, depth) {
   }
 
   const layoutBar = isDisk ? renderDiskLayoutBar(dev) : '';
+  const lvmHtml = dev.lvm ? renderLvmInfo(dev) : '';
   const children = (dev.children || []).map(c => renderDiskDevice(c, depth + 1)).filter(Boolean).join('');
 
   return `
@@ -888,9 +1009,10 @@ function renderDiskDevice(dev, depth) {
           <span class="badge ${typeBadgeClass}" style="font-size:0.7rem;">${typeLabel}</span>${fsLabel}
           ${removableBadge}${readonlyBadge}
         </div>
-        <div class="btn-group">${actionBtn}</div>
+        <div class="btn-group">${createBtn}${actionBtn}</div>
       </div>
       ${layoutBar}
+      ${lvmHtml}
       ${infoRows ? `<table class="proc-table" style="margin:0;"><tbody>${infoRows}</tbody></table>` : ''}
       ${usageHtml}
     </div>
@@ -998,6 +1120,321 @@ async function unmountDisk(deviceName, mountPoint) {
     }
   } catch (e) {
     showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+// --- Create Partition ---
+let pendingCreateDisk = null;
+let pendingCreateMaxBytes = 0;
+
+function formatBytesJS(b) {
+  if (b >= 1024**3) return (b / 1024**3).toFixed(1) + ' GB';
+  if (b >= 1024**2) return (b / 1024**2).toFixed(0) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+
+function openDiskCreateModal(diskName, totalBytes, freeBytes) {
+  pendingCreateDisk = diskName;
+  pendingCreateMaxBytes = freeBytes;
+
+  const freeMb = Math.floor(freeBytes / (1024 * 1024));
+  document.getElementById('disk-create-info').textContent = `/dev/${diskName} - 空き領域: ${formatBytesJS(freeBytes)}`;
+  document.getElementById('disk-create-size').value = Math.min(freeMb, 1024);
+  document.getElementById('disk-create-size').max = freeMb;
+  document.getElementById('disk-create-size-max').textContent = `${freeMb} MB`;
+  document.getElementById('disk-create-fstype').value = 'ext4';
+  document.getElementById('disk-create-mount').value = '';
+  document.getElementById('disk-create-status').className = 'status-msg';
+  document.getElementById('disk-create-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('disk-create-size').focus(), 100);
+}
+
+function closeDiskCreateModal() {
+  document.getElementById('disk-create-modal').style.display = 'none';
+  pendingCreateDisk = null;
+  pendingCreateMaxBytes = 0;
+}
+
+async function submitDiskCreate() {
+  if (!pendingCreateDisk) return;
+
+  const sizeMb = parseInt(document.getElementById('disk-create-size').value) || 0;
+  const fstype = document.getElementById('disk-create-fstype').value;
+  const mountPoint = document.getElementById('disk-create-mount').value.trim();
+  const statusEl = document.getElementById('disk-create-status');
+  const submitBtn = document.getElementById('btn-disk-create-submit');
+
+  if (sizeMb < 8) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'サイズは8MB以上を指定してください。';
+    return;
+  }
+
+  if (fstype === 'swap' && mountPoint) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'swapにはマウント先パスを指定できません。';
+    return;
+  }
+
+  if (!confirm(`'/dev/${pendingCreateDisk}' に ${sizeMb}MB の ${fstype} パーティションを作成しますか？`)) return;
+
+  const sizeSectors = Math.floor(sizeMb * 1024 * 1024 / 512);
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> パーティションを作成中...';
+  submitBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/disks/partition/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        disk: pendingCreateDisk,
+        size_sectors: sizeSectors,
+        fstype: fstype,
+        mount_point: mountPoint,
+      }),
+    });
+    const data = await resp.json();
+    submitBtn.disabled = false;
+
+    if (data.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = data.message;
+      showStatus(data.message, 'success');
+      setTimeout(() => {
+        closeDiskCreateModal();
+        loadDisks();
+      }, 1200);
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+    }
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Extend Partition ---
+let pendingExtendDevice = null;
+let pendingExtendMaxBytes = 0;
+
+function openDiskExtendModal(deviceName, currentBytes, maxExtendBytes) {
+  pendingExtendDevice = deviceName;
+  pendingExtendMaxBytes = maxExtendBytes;
+
+  const currentMb = Math.floor(currentBytes / (1024 * 1024));
+  const maxMb = Math.floor(maxExtendBytes / (1024 * 1024));
+  const afterMb = currentMb + maxMb;
+
+  document.getElementById('disk-extend-info').textContent = `/dev/${deviceName}`;
+  document.getElementById('disk-extend-current').textContent = formatBytesJS(currentBytes);
+  document.getElementById('disk-extend-max').textContent = `+${formatBytesJS(maxExtendBytes)}`;
+  document.getElementById('disk-extend-after').textContent = `${formatBytesJS(currentBytes + maxExtendBytes)} (${currentMb + maxMb} MB)`;
+  document.getElementById('disk-extend-status').className = 'status-msg';
+  document.getElementById('disk-extend-modal').style.display = 'flex';
+}
+
+function closeDiskExtendModal() {
+  document.getElementById('disk-extend-modal').style.display = 'none';
+  pendingExtendDevice = null;
+  pendingExtendMaxBytes = 0;
+}
+
+async function submitDiskExtend() {
+  if (!pendingExtendDevice) return;
+
+  if (!confirm(`'/dev/${pendingExtendDevice}' を最大容量まで拡張しますか？\n\n注意: ファイルシステムも自動的に拡張されます。`)) return;
+
+  const statusEl = document.getElementById('disk-extend-status');
+  const submitBtn = document.getElementById('btn-disk-extend-submit');
+
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 拡張中...';
+  submitBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/disks/partition/extend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: pendingExtendDevice }),
+    });
+    const data = await resp.json();
+    submitBtn.disabled = false;
+
+    if (data.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = data.message;
+      showStatus(data.message, 'success');
+      setTimeout(() => {
+        closeDiskExtendModal();
+        loadDisks();
+      }, 1200);
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+    }
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Create LV ---
+let pendingCreateLvVg = null;
+
+function openLvCreateModal(vgName, vgFree) {
+  pendingCreateLvVg = vgName;
+  document.getElementById('lv-create-info').textContent = `VG: ${vgName} - 空き: ${vgFree}`;
+  document.getElementById('lv-create-name').value = '';
+  document.getElementById('lv-create-size').value = '';
+  document.getElementById('lv-create-fstype').value = 'ext4';
+  document.getElementById('lv-create-mount').value = '';
+  document.getElementById('lv-create-status').className = 'status-msg';
+  document.getElementById('lv-create-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('lv-create-name').focus(), 100);
+}
+
+function closeLvCreateModal() {
+  document.getElementById('lv-create-modal').style.display = 'none';
+  pendingCreateLvVg = null;
+}
+
+async function submitLvCreate() {
+  if (!pendingCreateLvVg) return;
+
+  const lvName = document.getElementById('lv-create-name').value.trim();
+  const size = document.getElementById('lv-create-size').value.trim();
+  const fstype = document.getElementById('lv-create-fstype').value;
+  const mountPoint = document.getElementById('lv-create-mount').value.trim();
+  const statusEl = document.getElementById('lv-create-status');
+  const submitBtn = document.getElementById('btn-lv-create-submit');
+
+  if (!lvName || !size) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'LV名とサイズを入力してください。';
+    return;
+  }
+
+  if (fstype === 'swap' && mountPoint) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'swapにはマウント先パスを指定できません。';
+    return;
+  }
+
+  if (!confirm(`VG '${pendingCreateLvVg}' に LV '${lvName}' (${size}, ${fstype}) を作成しますか？`)) return;
+
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> 論理ボリュームを作成中...';
+  submitBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/disks/lv/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vg_name: pendingCreateLvVg,
+        lv_name: lvName,
+        size: size,
+        fstype: fstype,
+        mount_point: mountPoint,
+      }),
+    });
+    const data = await resp.json();
+    submitBtn.disabled = false;
+
+    if (data.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = data.message;
+      showStatus(data.message, 'success');
+      setTimeout(() => {
+        closeLvCreateModal();
+        loadDisks();
+      }, 1200);
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+    }
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Resize LV ---
+let pendingResizeLvVg = null;
+let pendingResizeLvName = null;
+
+function openLvResizeModal(vgName, lvName, lvSize, vgFree) {
+  pendingResizeLvVg = vgName;
+  pendingResizeLvName = lvName;
+  document.getElementById('lv-resize-info').textContent = `/dev/${vgName}/${lvName}`;
+  document.getElementById('lv-resize-current').textContent = lvSize;
+  document.getElementById('lv-resize-free').textContent = `+${vgFree}`;
+  document.getElementById('lv-resize-size').value = '';
+  document.getElementById('lv-resize-status').className = 'status-msg';
+  document.getElementById('lv-resize-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('lv-resize-size').focus(), 100);
+}
+
+function closeLvResizeModal() {
+  document.getElementById('lv-resize-modal').style.display = 'none';
+  pendingResizeLvVg = null;
+  pendingResizeLvName = null;
+}
+
+async function submitLvResize() {
+  if (!pendingResizeLvVg || !pendingResizeLvName) return;
+
+  const size = document.getElementById('lv-resize-size').value.trim();
+  const statusEl = document.getElementById('lv-resize-status');
+  const submitBtn = document.getElementById('btn-lv-resize-submit');
+
+  if (!size) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'サイズを入力してください。';
+    return;
+  }
+
+  if (!confirm(`'/dev/${pendingResizeLvVg}/${pendingResizeLvName}' を ${size} にリサイズしますか？\n\nファイルシステムも自動的に拡張されます。`)) return;
+
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> リサイズ中...';
+  submitBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/disks/lv/resize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vg_name: pendingResizeLvVg,
+        lv_name: pendingResizeLvName,
+        size: size,
+      }),
+    });
+    const data = await resp.json();
+    submitBtn.disabled = false;
+
+    if (data.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = data.message;
+      showStatus(data.message, 'success');
+      setTimeout(() => {
+        closeLvResizeModal();
+        loadDisks();
+      }, 1200);
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+    }
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
   }
 }
 

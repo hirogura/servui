@@ -837,8 +837,142 @@ async def wifi_toggle(req: Request):
 
 
 # ============================================================
-# 6. Disk Information
+# 6. Disk Management
 # ============================================================
+
+async def get_sfdisk_free_info(disk_name):
+    """Parse sfdisk to detect free regions and per-partition extendability."""
+    disk_path = f"/dev/{disk_name}"
+    result = {"total_free_bytes": 0, "partitions": []}
+
+    res = await run_cmd(f"sfdisk -d {disk_path} 2>/dev/null", timeout=10)
+    if res["returncode"] != 0:
+        return result
+
+    lines = res["stdout"].strip().split("\n")
+    partitions = []
+    last_lba = 0
+    sector_size = 512
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("last-lba:"):
+            last_lba = int(line.split(":")[1].strip())
+        elif line.startswith("sector-size:"):
+            sector_size = int(line.split(":")[1].strip())
+        elif line.startswith("/dev/"):
+            start = size = None
+            name = line.split(":")[0].split("/")[-1].strip()
+            for field in line.split(":")[1].split(","):
+                field = field.strip()
+                if field.startswith("start="):
+                    start = int(field.split("=")[1])
+                elif field.startswith("size="):
+                    size = int(field.split("=")[1])
+            if start is not None and size is not None:
+                partitions.append({"name": name, "start": start, "size": size, "end": start + size})
+
+    if not partitions:
+        return result
+
+    partitions.sort(key=lambda p: p["start"])
+
+    # GPT reserves first 34 sectors and last 33 sectors
+    gpt_reserved_end = 34
+    gpt_reserved_start = last_lba - 32 if last_lba > 32 else last_lba
+
+    # Find free regions and mark extendable partitions
+    free_sectors = 0
+    current_pos = gpt_reserved_end
+
+    for p in partitions:
+        # Free space before this partition
+        if p["start"] > current_pos:
+            free_sectors += p["start"] - current_pos
+
+        # Mark previous partition as extendable if there was a gap
+        if partitions.index(p) > 0:
+            prev = partitions[partitions.index(p) - 1]
+            if p["start"] > prev["end"]:
+                prev["extendable"] = True
+                prev["max_extend_bytes"] = (p["start"] - prev["end"]) * sector_size
+
+        current_pos = p["end"]
+
+    # Free space after last partition
+    usable_end = gpt_reserved_start
+    if usable_end > current_pos:
+        free_sectors += usable_end - current_pos
+        partitions[-1]["extendable"] = True
+        partitions[-1]["max_extend_bytes"] = (usable_end - partitions[-1]["end"]) * sector_size
+
+    # Initialize non-extendable partitions
+    for p in partitions:
+        if "extendable" not in p:
+            p["extendable"] = False
+            p["max_extend_bytes"] = 0
+
+    result["total_free_bytes"] = free_sectors * sector_size
+    result["partitions"] = partitions
+    return result
+
+
+async def _get_lvm_info():
+    """Gather LVM VG/LV info, keyed by PV device name."""
+    result = {}
+    pvs_res = await run_cmd("pvs --reportformat json -o pv_name,vg_name,pv_size,pv_free 2>/dev/null", timeout=10)
+    if pvs_res["returncode"] != 0:
+        return result
+    try:
+        pvs_data = json.loads(pvs_res["stdout"])
+        for report in pvs_data.get("report", []):
+            for pv in report.get("pv", []):
+                pv_name = pv["pv_name"].split("/")[-1]
+                result[pv_name] = {
+                    "vg_name": pv["vg_name"],
+                    "pv_size": pv["pv_size"],
+                    "pv_free": pv["pv_free"],
+                    "lvs": [],
+                }
+    except (json.JSONDecodeError, KeyError):
+        return result
+
+    vgs_res = await run_cmd("vgs --reportformat json -o vg_name,vg_size,vg_free 2>/dev/null", timeout=10)
+    if vgs_res["returncode"] == 0:
+        try:
+            vgs_data = json.loads(vgs_res["stdout"])
+            for report in vgs_data.get("report", []):
+                for vg in report.get("vg", []):
+                    for pv_info in result.values():
+                        if pv_info["vg_name"] == vg["vg_name"]:
+                            pv_info["vg_size"] = vg["vg_size"]
+                            pv_info["vg_free"] = vg["vg_free"]
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    lvs_res = await run_cmd("lvs --reportformat json -o lv_name,vg_name,lv_size,lv_path 2>/dev/null", timeout=10)
+    if lvs_res["returncode"] == 0:
+        try:
+            lvs_data = json.loads(lvs_res["stdout"])
+            for report in lvs_data.get("report", []):
+                for lv in report.get("lv", []):
+                    lv_path = lv.get("lv_path", "")
+                    mp_res = await run_cmd(f"findmnt -n -o TARGET {lv_path} 2>/dev/null", timeout=5)
+                    mountpoint = mp_res["stdout"].strip()
+                    for pv_info in result.values():
+                        if pv_info["vg_name"] == lv["vg_name"]:
+                            pv_info["lvs"].append({
+                                "name": lv["lv_name"],
+                                "size": lv["lv_size"],
+                                "path": lv_path,
+                                "mountpoint": mountpoint,
+                            })
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return result
+
+
 @app.get("/api/disks/info")
 async def disks_info():
     """Get disk and partition information using lsblk + df."""
@@ -933,6 +1067,27 @@ async def disks_info():
         return entry
 
     devices = [parse_device(d) for d in blocks]
+
+    # Enrich disk entries with free space info from sfdisk
+    for dev in devices:
+        if dev.get("type") == "disk":
+            free_info = await get_sfdisk_free_info(dev["name"])
+            dev["free_bytes"] = free_info["total_free_bytes"]
+            part_map = {p["name"]: p for p in free_info["partitions"]}
+            for child in dev.get("children", []):
+                if child["name"] in part_map:
+                    child["extendable"] = part_map[child["name"]]["extendable"]
+                    child["max_extend_bytes"] = part_map[child["name"]]["max_extend_bytes"]
+
+    # Enrich LVM2_member partitions with VG/LV info
+    lvm_data = await _get_lvm_info()
+    def enrich_lvm(entries):
+        for e in entries:
+            if e.get("fstype") == "LVM2_member" and e.get("name") in lvm_data:
+                e["lvm"] = lvm_data[e["name"]]
+            for child in e.get("children", []):
+                enrich_lvm([child])
+    enrich_lvm(devices)
 
     return {"devices": devices}
 
@@ -1031,6 +1186,292 @@ async def disks_unmount(req: Request):
         msg += "\n注意: /etc/fstabにエントリが残っています。永続マウント設定を解除する場合はターミナルで手動で削除してください。"
 
     return {"success": True, "message": msg, "fstab_entry": fstab_entry}
+
+
+@app.post("/api/disks/partition/create")
+async def disks_partition_create(req: Request):
+    """Create a new partition on a disk with optional filesystem and mount."""
+    data = await req.json()
+    disk_name = data.get("disk", "").strip()
+    size_sectors = data.get("size_sectors", 0)
+    fstype = data.get("fstype", "ext4").strip()
+    mount_point = data.get("mount_point", "").strip()
+
+    if not disk_name or size_sectors <= 0:
+        raise HTTPException(status_code=400, detail="disk and size_sectors are required")
+
+    disk_path = f"/dev/{disk_name}"
+
+    # Verify it's a disk device
+    type_check = await run_cmd(f"lsblk -dno TYPE {disk_path} 2>/dev/null", timeout=5)
+    if type_check["stdout"].strip() != "disk":
+        return {"success": False, "message": f"{disk_path} はディスクデバイスではありません"}
+
+    # Create partition using sfdisk
+    type_uuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"  # Linux filesystem
+    if fstype == "swap":
+        type_uuid = "0657FD6D-A4AB-43C4-84B5-1560EF63A218"  # Linux swap
+    elif fstype in ("vfat", "fat32", "fat16"):
+        type_uuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"  # EFI System
+
+    sfdisk_input = f"type={type_uuid}, size={size_sectors}"
+    res = await run_cmd(
+        _sudo(f"echo '{sfdisk_input}' | sfdisk --append --no-reread {disk_path}"),
+        timeout=15,
+    )
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"パーティション作成に失敗しました: {res['stderr']}"}
+
+    # Re-read partition table
+    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await asyncio.sleep(1)
+
+    # Find the newly created partition
+    lsblk_res = await run_cmd(f"lsblk -Jno NAME,SIZE,TYPE {disk_path} 2>/dev/null", timeout=10)
+    new_part_name = None
+    try:
+        blk = json.loads(lsblk_res["stdout"])
+        children = blk.get("blockdevices", [])
+        if children:
+            parts = children[0].get("children", [])
+            if parts:
+                new_part_name = parts[-1]["name"]
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+    if not new_part_name:
+        return {"success": True, "message": "パーティションを作成しました（デバイス名の取得に失敗しました）"}
+
+    new_part_path = f"/dev/{new_part_name}"
+
+    # Format filesystem (skip for swap)
+    if fstype == "swap":
+        mkfs_res = await run_cmd(_sudo(f"mkswap {new_part_path}"), timeout=30)
+        if mkfs_res["returncode"] != 0:
+            return {"success": False, "message": f"swapの作成に失敗しました: {mkfs_res['stderr']}"}
+        return {"success": True, "message": f"パーティション {new_part_name} を作成し、swapとして初期化しました", "device": new_part_name}
+    else:
+        mkfs_cmd = f"mkfs.{fstype} {new_part_path}"
+        mkfs_res = await run_cmd(_sudo(mkfs_cmd), timeout=60)
+        if mkfs_res["returncode"] != 0:
+            return {"success": False, "message": f"ファイルシステム作成に失敗しました: {mkfs_res['stderr']}"}
+
+    # Mount if requested
+    if mount_point:
+        await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
+        mount_res = await run_cmd(_sudo(f"mount {new_part_path} {mount_point}"), timeout=15)
+        if mount_res["returncode"] != 0:
+            return {"success": True, "message": f"パーティション {new_part_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": new_part_name}
+
+    msg = f"パーティション {new_part_name} を作成しました ({fstype})"
+    if mount_point:
+        msg += f" → {mount_point}"
+    return {"success": True, "message": msg, "device": new_part_name}
+
+
+@app.post("/api/disks/partition/extend")
+async def disks_partition_extend(req: Request):
+    """Extend a partition to use available free space."""
+    data = await req.json()
+    device_name = data.get("device", "").strip()
+
+    if not device_name:
+        raise HTTPException(status_code=400, detail="device is required")
+
+    device_path = f"/dev/{device_name}"
+
+    # Verify it's a partition
+    type_check = await run_cmd(f"lsblk -dno TYPE {device_path} 2>/dev/null", timeout=5)
+    dev_type = type_check["stdout"].strip()
+    if dev_type not in ("part", "lvm"):
+        return {"success": False, "message": f"{device_path} はパーティションではありません"}
+
+    # Find parent disk and get free info
+    parent_res = await run_cmd(f"lsblk -dno PKNAME {device_path} 2>/dev/null", timeout=5)
+    parent_disk = parent_res["stdout"].strip()
+    if not parent_disk:
+        return {"success": False, "message": "親ディスクが見つかりません"}
+
+    free_info = await get_sfdisk_free_info(parent_disk)
+    part_info = None
+    for p in free_info["partitions"]:
+        if p["name"] == device_name:
+            part_info = p
+            break
+
+    if not part_info or not part_info.get("extendable"):
+        return {"success": False, "message": "このパーティションは拡張できません（隣接する空き領域がありません）"}
+
+    max_bytes = part_info["max_extend_bytes"]
+    sector_size = 512
+    add_sectors = max_bytes // sector_size
+    new_size_sectors = part_info["size"] + add_sectors
+
+    # Get partition number from name (e.g., vda3 -> 3)
+    part_num = ""
+    for ch in reversed(device_name):
+        if ch.isdigit():
+            part_num = ch + part_num
+        else:
+            break
+
+    if not part_num:
+        return {"success": False, "message": "パーティション番号を取得できませんでした"}
+
+    disk_path = f"/dev/{parent_disk}"
+
+    # Check if the partition is mounted
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {device_path} 2>/dev/null", timeout=5)
+    mountpoint = mp_res["stdout"].strip()
+
+    # Detect filesystem type
+    fs_res = await run_cmd(f"blkid -s TYPE -o value {device_path} 2>/dev/null", timeout=5)
+    fs_type = fs_res["stdout"].strip()
+
+    # Unmount if mounted (resize2fs/xfs_growfs can work online but partition resize needs unmount for safety)
+    needs_remount = False
+    if mountpoint:
+        unmount_res = await run_cmd(_sudo(f"umount {device_path}"), timeout=15)
+        if unmount_res["returncode"] != 0:
+            return {"success": False, "message": f"アンマウントに失敗しました: {unmount_res['stderr']}"}
+        needs_remount = True
+
+    # Resize partition using sfdisk
+    sfdisk_input = f"{part_num}: size={new_size_sectors}"
+    resize_res = await run_cmd(
+        _sudo(f"echo '{sfdisk_input}' | sfdisk --no-reread -N {part_num} {disk_path}"),
+        timeout=15,
+    )
+    if resize_res["returncode"] != 0:
+        # Try to remount if we unmounted
+        if needs_remount and mountpoint:
+            await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+        return {"success": False, "message": f"パーティション拡張に失敗しました: {resize_res['stderr']}"}
+
+    # Re-read partition table
+    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await asyncio.sleep(1)
+
+    # Resize filesystem
+    if fs_type == "ext4" or fs_type == "ext3" or fs_type == "ext2":
+        fs_res = await run_cmd(_sudo(f"resize2fs {device_path}"), timeout=30)
+        if fs_res["returncode"] != 0:
+            return {"success": False, "message": f"ファイルシステム拡張に失敗しました: {fs_res['stderr']}"}
+    elif fs_type == "xfs":
+        # XFS needs a mount point for growfs
+        if mountpoint:
+            fs_res = await run_cmd(_sudo(f"xfs_growfs {mountpoint}"), timeout=30)
+        else:
+            fs_res = {"returncode": 1, "stderr": "XFSはマウントされていない状態では拡張できません"}
+        if fs_res["returncode"] != 0:
+            return {"success": False, "message": f"ファイルシステム拡張に失敗しました: {fs_res.get('stderr', 'unknown error')}"}
+    elif fs_type == "btrfs":
+        if mountpoint:
+            fs_res = await run_cmd(_sudo(f"btrfs filesystem resize max {mountpoint}"), timeout=30)
+        else:
+            fs_res = {"returncode": 1, "stderr": "Btrfsはマウントされていない状態では拡張できません"}
+        if fs_res["returncode"] != 0:
+            return {"success": False, "message": f"ファイルシステム拡張に失敗しました: {fs_res.get('stderr', 'unknown error')}"}
+
+    # Remount if needed
+    if needs_remount and mountpoint:
+        await run_cmd(_sudo(f"mount {device_path} {mountpoint}"), timeout=15)
+
+    msg = f"パーティション {device_name} を拡張しました (+{_format_bytes(max_bytes)})"
+    if needs_remount and mountpoint:
+        msg += f" (マウント済み: {mountpoint})"
+    return {"success": True, "message": msg}
+
+
+def _format_bytes(b):
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if b < 1024:
+            return f"{b:.1f}{unit}"
+        b /= 1024
+    return f"{b:.1f}PB"
+
+
+@app.post("/api/disks/lv/create")
+async def disks_lv_create(req: Request):
+    """Create a new logical volume in a VG, format and optionally mount."""
+    data = await req.json()
+    vg_name = data.get("vg_name", "").strip()
+    lv_name = data.get("lv_name", "").strip()
+    size = data.get("size", "").strip()
+    fstype = data.get("fstype", "ext4").strip()
+    mount_point = data.get("mount_point", "").strip()
+
+    if not vg_name or not lv_name or not size:
+        raise HTTPException(status_code=400, detail="vg_name, lv_name, and size are required")
+
+    # Create LV
+    lv_path = f"/dev/{vg_name}/{lv_name}"
+    res = await run_cmd(_sudo(f"lvcreate -L {size} -n {lv_name} {vg_name}"), timeout=30)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"論理ボリューム作成に失敗しました: {res['stderr']}"}
+
+    # Format
+    if fstype == "swap":
+        mkfs_res = await run_cmd(_sudo(f"mkswap {lv_path}"), timeout=30)
+        if mkfs_res["returncode"] != 0:
+            return {"success": False, "message": f"swapの初期化に失敗しました: {mkfs_res['stderr']}"}
+        swapon_res = await run_cmd(_sudo(f"swapon {lv_path}"), timeout=10)
+        msg = f"LV {lv_name} を作成し、swapとして有効にしました"
+        return {"success": True, "message": msg, "device": lv_name}
+    else:
+        mkfs_res = await run_cmd(_sudo(f"mkfs.{fstype} {lv_path}"), timeout=60)
+        if mkfs_res["returncode"] != 0:
+            return {"success": False, "message": f"ファイルシステム作成に失敗しました: {mkfs_res['stderr']}"}
+
+    # Mount if requested
+    if mount_point:
+        await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
+        mount_res = await run_cmd(_sudo(f"mount {lv_path} {mount_point}"), timeout=15)
+        if mount_res["returncode"] != 0:
+            return {"success": True, "message": f"LV {lv_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": lv_name}
+
+    msg = f"LV {lv_name} を作成しました ({fstype}, {size})"
+    if mount_point:
+        msg += f" → {mount_point}"
+    return {"success": True, "message": msg, "device": lv_name}
+
+
+@app.post("/api/disks/lv/resize")
+async def disks_lv_resize(req: Request):
+    """Resize a logical volume and its filesystem."""
+    data = await req.json()
+    vg_name = data.get("vg_name", "").strip()
+    lv_name = data.get("lv_name", "").strip()
+    size = data.get("size", "").strip()  # e.g., "30G" or "+10G"
+
+    if not vg_name or not lv_name or not size:
+        raise HTTPException(status_code=400, detail="vg_name, lv_name, and size are required")
+
+    lv_path = f"/dev/{vg_name}/{lv_name}"
+
+    # Check if LV exists
+    check = await run_cmd(f"test -b {lv_path}", timeout=5)
+    if check["returncode"] != 0:
+        return {"success": False, "message": f"論理ボリューム {lv_path} が見つかりません"}
+
+    # Detect filesystem type
+    fs_res = await run_cmd(f"blkid -s TYPE -o value {lv_path} 2>/dev/null", timeout=5)
+    fs_type = fs_res["stdout"].strip()
+
+    # Get mount point
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {lv_path} 2>/dev/null", timeout=5)
+    mountpoint = mp_res["stdout"].strip()
+
+    # Resize LV
+    resize_cmd = f"lvresize -r -L {size} {lv_path}"
+    res = await run_cmd(_sudo(resize_cmd), timeout=30)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"LVリサイズに失敗しました: {res['stderr']}"}
+
+    msg = f"LV {lv_name} を {size} にリサイズしました"
+    if mountpoint:
+        msg += f" (マウント済み: {mountpoint})"
+    return {"success": True, "message": msg}
 
 
 # ============================================================

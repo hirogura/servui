@@ -282,6 +282,133 @@
           </div>
         </div>
       </div>
+
+      <!-- Create Partition Modal -->
+      <div id="disk-create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>パーティションを作成</h3>
+          <p id="disk-create-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="disk-create-size">サイズ (MB)</label>
+            <input type="number" id="disk-create-size" min="8" style="width:100%;margin-top:0.25rem;">
+            <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">
+              <span>8 MB</span>
+              <span id="disk-create-size-max"></span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="disk-create-fstype">ファイルシステム</label>
+            <select id="disk-create-fstype" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="ext4">ext4</option>
+              <option value="ext3">ext3</option>
+              <option value="xfs">xfs</option>
+              <option value="btrfs">btrfs</option>
+              <option value="vfat">FAT32 (vfat)</option>
+              <option value="swap">swap</option>
+            </select>
+          </div>
+          <div class="form-group" id="disk-create-mount-group">
+            <label for="disk-create-mount">マウント先パス (任意)</label>
+            <input type="text" id="disk-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div id="disk-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskCreateModal()">キャンセル</button>
+            <button class="btn btn-success" id="btn-disk-create-submit" onclick="submitDiskCreate()">作成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Extend Partition Modal -->
+      <div id="disk-extend-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>パーティションを拡張</h3>
+          <p id="disk-extend-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div style="padding:0.6rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1rem;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">現在のサイズ</span>
+              <span id="disk-extend-current"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">最大拡張可能</span>
+              <span id="disk-extend-max" class="text-success"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--text-muted);">拡張後のサイズ</span>
+              <span id="disk-extend-after" style="font-weight:600;"></span>
+            </div>
+          </div>
+          <div id="disk-extend-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskExtendModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-disk-extend-submit" onclick="submitDiskExtend()">拡張</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create LV Modal -->
+      <div id="lv-create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>論理ボリュームを作成</h3>
+          <p id="lv-create-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="lv-create-name">LV名</label>
+            <input type="text" id="lv-create-name" placeholder="data-lv" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group">
+            <label for="lv-create-size">サイズ</label>
+            <input type="text" id="lv-create-size" placeholder="10G" style="width:100%;margin-top:0.25rem;">
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">例: 500M, 10G, 1.5T</div>
+          </div>
+          <div class="form-group">
+            <label for="lv-create-fstype">ファイルシステム</label>
+            <select id="lv-create-fstype" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="ext4">ext4</option>
+              <option value="ext3">ext3</option>
+              <option value="xfs">xfs</option>
+              <option value="btrfs">btrfs</option>
+              <option value="swap">swap</option>
+            </select>
+          </div>
+          <div class="form-group" id="lv-create-mount-group">
+            <label for="lv-create-mount">マウント先パス (任意)</label>
+            <input type="text" id="lv-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div id="lv-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeLvCreateModal()">キャンセル</button>
+            <button class="btn btn-success" id="btn-lv-create-submit" onclick="submitLvCreate()">作成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resize LV Modal -->
+      <div id="lv-resize-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>論理ボリュームを拡張</h3>
+          <p id="lv-resize-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div style="padding:0.6rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1rem;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">現在のサイズ</span>
+              <span id="lv-resize-current"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--text-muted);">VG空き領域</span>
+              <span id="lv-resize-free" class="text-success"></span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="lv-resize-size">新しいサイズ (例: 30G, +10G)</label>
+            <input type="text" id="lv-resize-size" placeholder="30G" style="width:100%;margin-top:0.25rem;">
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">絶対値(30G) or 相対値(+10G) を指定</div>
+          </div>
+          <div id="lv-resize-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeLvResizeModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-lv-resize-submit" onclick="submitLvResize()">拡張</button>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
