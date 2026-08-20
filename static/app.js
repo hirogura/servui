@@ -955,13 +955,17 @@ async function openSelfcode() {
     if (data.installed && data.url) {
       // Open selfcode in new tab
       window.open(data.url, '_blank');
-    } else {
-      // Switch to terminal and run install commands
+    } else if (data.installed) {
+      // Installed but URL unknown
       switchTab('terminal');
-      showStatus('selfcodeをインストール中...', 'info');
+      showStatus('selfcodeはインストール済みです。URLを取得できませんでした。', 'info');
+    } else {
+      // Switch to terminal and run prerequisite install only
+      switchTab('terminal');
+      showStatus('selfcodeの事前準備をしています。完了後、スクリプトを実行してください。', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'sudo apt update && sudo apt install -y git curl\ncurl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh\nsudo bash /tmp/install-selfcode.sh -y\n';
+          const installCmd = 'sudo apt update && sudo apt install -y git curl\ncurl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh\necho "\\n事前準備完了！以下のコマンドを手動で実行してください:\\n  sudo bash /tmp/install-selfcode.sh\\n"\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
