@@ -1064,9 +1064,10 @@ async def selfcode_install():
         "curl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh",
         timeout=60,
     )
-    # Step 3: Run install script
+    # Step 3: Run install script (use -y to skip interactive prompts,
+    #          because subprocess has no TTY and 'read' fails under set -e)
     r4 = await run_cmd(
-        _sudo("bash /tmp/install-selfcode.sh"),
+        _sudo("bash /tmp/install-selfcode.sh -y"),
         timeout=600,
     )
 
