@@ -381,6 +381,8 @@ h2 {
 .badge-inactive::before { background: var(--danger); }
 .badge-other { background: var(--bg-elevated); color: var(--text-muted); }
 .badge-other::before { background: var(--text-muted); }
+.badge-warn { background: var(--warning-soft); color: var(--warning); }
+.badge-warn::before { background: var(--warning); }
 
 /* ── Service Detail Panel ── */
 .service-detail {

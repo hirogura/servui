@@ -837,7 +837,190 @@ async def wifi_toggle(req: Request):
 
 
 # ============================================================
-# 6. serv-UI Management & System Control
+# 6. Disk Information
+# ============================================================
+@app.get("/api/disks/info")
+async def disks_info():
+    """Get disk and partition information using lsblk + df."""
+    # lsblk: NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,RM,RO,MODEL,SERIAL
+    lsblk_res = await run_cmd(
+        "lsblk -J -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,RM,RO,MODEL,SERIAL,UUID,PARTLABEL,LABEL 2>/dev/null",
+        timeout=10,
+    )
+
+    # df -h for all mounted filesystems (skip tmpfs, devtmpfs etc.)
+    df_res = await run_cmd(
+        "df -h -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | tail -n +2",
+        timeout=10,
+    )
+
+    # Parse lsblk JSON
+    blocks = []
+    try:
+        blk_data = json.loads(lsblk_res["stdout"])
+        blocks = blk_data.get("blockdevices", [])
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+    # Parse df output into a dict keyed by mountpoint
+    df_info = {}
+    for line in df_res["stdout"].strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 6:
+            mount = parts[5]
+            df_info[mount] = {
+                "filesystem": parts[0],
+                "size": parts[1],
+                "used": parts[2],
+                "avail": parts[3],
+                "use_percent": parts[4],
+                "mountpoint": mount,
+            }
+
+    def parse_device(dev):
+        """Recursively parse a lsblk device entry."""
+        fstype = dev.get("fstype") or ""
+        mountpoint = dev.get("mountpoint") or ""
+        name = dev.get("name", "")
+        size = dev.get("size", "")
+        rm = dev.get("rm", False)
+        ro = dev.get("ro", False)
+        model = (dev.get("model") or "").strip()
+        serial = (dev.get("serial") or "").strip()
+        uuid = dev.get("uuid") or ""
+        partlabel = (dev.get("partlabel") or "").strip()
+        fslabel = (dev.get("label") or "").strip()
+        devtype = dev.get("type", "")
+
+        entry = {
+            "name": name,
+            "size": size,
+            "type": devtype,
+            "fstype": fstype,
+            "mountpoint": mountpoint,
+            "removable": rm,
+            "readonly": ro,
+            "model": model,
+            "serial": serial,
+            "uuid": uuid,
+            "partlabel": partlabel,
+            "label": fslabel,
+        }
+
+        # Merge df data if mounted
+        if mountpoint and mountpoint in df_info:
+            entry["df"] = df_info[mountpoint]
+
+        # Recurse into children (partitions of a disk)
+        children = dev.get("children", [])
+        if children:
+            entry["children"] = [parse_device(c) for c in children]
+
+        return entry
+
+    devices = [parse_device(d) for d in blocks]
+
+    return {"devices": devices}
+
+
+@app.post("/api/disks/mount")
+async def disks_mount(req: Request):
+    """Mount a partition. Supports temporary or persistent (fstab) mount."""
+    data = await req.json()
+    device_name = data.get("device", "").strip()
+    mount_point = data.get("mount_point", "").strip()
+    persistent = data.get("persistent", False)
+    fstype = data.get("fstype", "").strip()
+
+    if not device_name or not mount_point:
+        raise HTTPException(status_code=400, detail="device and mount_point are required")
+
+    # Build full device path
+    device_path = f"/dev/{device_name}" if not device_name.startswith("/dev/") else device_name
+
+    # Validate device exists
+    check = await run_cmd(f"test -b {device_path}", timeout=5)
+    if check["returncode"] != 0:
+        return {"success": False, "message": f"デバイス {device_path} が見つかりません"}
+
+    # Create mount point if it doesn't exist
+    await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
+
+    if persistent:
+        # Get UUID for fstab
+        blkid = await run_cmd(f"blkid -s UUID -o value {device_path}", timeout=5)
+        uuid = blkid["stdout"].strip()
+        if not uuid:
+            return {"success": False, "message": "UUIDを取得できませんでした"}
+
+        # Determine fstype for fstab if not provided
+        if not fstype:
+            blkid_type = await run_cmd(f"blkid -s TYPE -o value {device_path}", timeout=5)
+            fstype = blkid_type["stdout"].strip()
+
+        if not fstype:
+            return {"success": False, "message": "ファイルシステムタイプを取得できませんでした"}
+
+        # Check if already in fstab
+        fstab_check = await run_cmd(f"grep -q '{uuid}' /etc/fstab", timeout=5)
+        if fstab_check["returncode"] == 0:
+            return {"success": False, "message": "このデバイスは既に/etc/fstabに登録されています"}
+
+        # Add to fstab (options: defaults,nofail for safety)
+        fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
+        add_fstab = await run_cmd(
+            _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+            timeout=10,
+        )
+        if add_fstab["returncode"] != 0:
+            return {"success": False, "message": f"/etc/fstabへの追加に失敗しました: {add_fstab['stderr']}"}
+
+        # Now mount it
+        mount_res = await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+        if mount_res["returncode"] != 0:
+            return {"success": False, "message": f"マウントに失敗しました: {mount_res['stderr']}"}
+
+        return {"success": True, "message": f"永続マウントしました: {device_path} → {mount_point}"}
+
+    else:
+        # Temporary mount
+        mount_res = await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+        if mount_res["returncode"] != 0:
+            return {"success": False, "message": f"マウントに失敗しました: {mount_res['stderr']}"}
+        return {"success": True, "message": f"一時マウントしました: {device_path} → {mount_point}"}
+
+
+@app.post("/api/disks/unmount")
+async def disks_unmount(req: Request):
+    """Unmount a partition."""
+    data = await req.json()
+    device_name = data.get("device", "").strip()
+    mount_point = data.get("mount_point", "").strip()
+
+    if not device_name and not mount_point:
+        raise HTTPException(status_code=400, detail="device or mount_point is required")
+
+    target = mount_point if mount_point else f"/dev/{device_name}"
+    device_path = f"/dev/{device_name}" if not device_name.startswith("/dev/") else device_name
+
+    # Unmount
+    res = await run_cmd(_sudo(f"umount {target}"), timeout=15)
+    if res["returncode"] != 0:
+        return {"success": False, "message": f"アンマウントに失敗しました: {res['stderr']}"}
+
+    # If there was a fstab entry, offer info (don't auto-remove for safety)
+    fstab_check = await run_cmd(f"grep -n '{device_path}\\|{mount_point}' /etc/fstab 2>/dev/null", timeout=5)
+    fstab_entry = fstab_check["stdout"].strip() if fstab_check["returncode"] == 0 else ""
+
+    msg = f"アンマウントしました: {target}"
+    if fstab_entry:
+        msg += "\n注意: /etc/fstabにエントリが残っています。永続マウント設定を解除する場合はターミナルで手動で削除してください。"
+
+    return {"success": True, "message": msg, "fstab_entry": fstab_entry}
+
+
+# ============================================================
+# 7. serv-UI Management & System Control
 # ============================================================
 @app.get("/api/selfcode/status")
 async def selfcode_status():

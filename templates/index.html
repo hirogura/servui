@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>serv-UI</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=2">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
@@ -38,6 +38,10 @@
       <li data-tab="wifi">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
         <span>Wi-Fi</span>
+      </li>
+      <li data-tab="disks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        <span>ディスク</span>
       </li>
       <li data-tab="selfcode" onclick="openSelfcode()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
@@ -239,8 +243,48 @@
         </div>
       </div>
     </section>
+
+    <!-- Disks -->
+    <section id="tab-disks" class="tab-content">
+      <h1>ディスク情報</h1>
+      <div id="disk-status-msg" class="status-msg"></div>
+      <div id="disks-container">
+        <p class="muted"><span class="spinner"></span> ディスク情報を取得中...</p>
+      </div>
+
+      <!-- Mount Modal -->
+      <div id="disk-mount-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3 id="disk-mount-title">パーティションをマウント</h3>
+          <p id="disk-mount-device" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="disk-mount-point">マウント先パス</label>
+            <input type="text" id="disk-mount-point" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" style="margin-top:0.75rem;">
+            <label>マウント種別</label>
+            <div style="display:flex;gap:1rem;margin-top:0.5rem;">
+              <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+                <input type="radio" name="disk-mount-type" value="temp" checked> 一時的（再起動後に解除）
+              </label>
+              <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+                <input type="radio" name="disk-mount-type" value="persist"> 永続的（/etc/fstabに追加）
+              </label>
+            </div>
+          </div>
+          <div id="disk-mount-persist-warn" style="display:none;margin-top:0.75rem;padding:0.6rem;background:var(--warning-soft);border-radius:6px;font-size:0.8rem;color:var(--warning);">
+            永続マウントは /etc/fstab にエントリを追加します。マウント先パスやファイルシステムタイプをよく確認してください。
+          </div>
+          <div id="disk-mount-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskMountModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-disk-mount-submit" onclick="submitDiskMount()">マウント</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

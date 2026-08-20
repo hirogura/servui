@@ -32,6 +32,8 @@ function switchTab(tab) {
     }
   } else if (tab === 'wifi') {
     loadWifiStatus();
+  } else if (tab === 'disks') {
+    loadDisks();
   }
 }
 
@@ -696,6 +698,227 @@ async function toggleWifi() {
       setTimeout(loadWifiStatus, 1000);
     } else {
       showStatus(`操作に失敗しました: ${data.message}`, 'error');
+    }
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+// --- Disks ---
+let pendingMountDevice = null;
+let pendingMountFstype = null;
+
+async function loadDisks() {
+  const container = document.getElementById('disks-container');
+  const statusMsg = document.getElementById('disk-status-msg');
+  container.innerHTML = '<p class="muted"><span class="spinner"></span> ディスク情報を取得中...</p>';
+  statusMsg.className = 'status-msg';
+
+  try {
+    const resp = await fetch('/api/disks/info');
+    const data = await resp.json();
+
+    if (!data.devices || data.devices.length === 0) {
+      statusMsg.className = 'status-msg show info';
+      statusMsg.textContent = 'ディスクデバイスが検出されませんでした。';
+      container.innerHTML = '';
+      return;
+    }
+
+    container.innerHTML = data.devices.map(dev => renderDiskDevice(dev, 0)).join('');
+
+  } catch (e) {
+    statusMsg.className = 'status-msg show error';
+    statusMsg.textContent = `ディスク情報取得エラー: ${e.message}`;
+    container.innerHTML = '';
+  }
+}
+
+function renderDiskDevice(dev, depth) {
+  const indent = depth * 1.5;
+  const isDisk = dev.type === 'disk';
+  const isPart = dev.type === 'part';
+  const isLoop = dev.name.startsWith('loop');
+  const isRam = dev.name.startsWith('ram');
+
+  if (isLoop || isRam) return '';
+
+  const removableBadge = dev.removable
+    ? '<span class="badge badge-warn" style="margin-left:0.5rem;">取り外し可能</span>'
+    : '';
+  const readonlyBadge = dev.readonly
+    ? '<span class="badge badge-other" style="margin-left:0.5rem;">読み取り専用</span>'
+    : '';
+
+  const typeLabel = isDisk ? 'ディスク' : isPart ? 'パーティション' : dev.type;
+  const typeBadgeClass = isDisk ? 'badge-active' : isPart ? 'badge-other' : 'badge-inactive';
+  const fsLabel = dev.label ? ` <span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.3rem;">${escapeHtml(dev.label)}</span>` : '';
+
+  // Mount/unmount button for partitions with fstype and not read-only
+  let actionBtn = '';
+  if (isPart && dev.fstype && !dev.readonly) {
+    const safeName = escapeHtml(dev.name);
+    const safeMp = escapeHtml(dev.mountpoint || '');
+    const safeFs = escapeHtml(dev.fstype);
+    if (dev.mountpoint) {
+      actionBtn = `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${safeName}','${safeMp}')" title="アンマウント">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        アンマウント
+      </button>`;
+    } else {
+      actionBtn = `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${safeName}','${safeFs}')" title="マウント">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        マウント
+      </button>`;
+    }
+  }
+
+  let infoRows = '';
+  if (dev.fstype) infoRows += `<tr><td>ファイルシステム</td><td>${escapeHtml(dev.fstype)}</td></tr>`;
+  if (dev.size) infoRows += `<tr><td>サイズ</td><td>${escapeHtml(dev.size)}</td></tr>`;
+  if (dev.mountpoint) infoRows += `<tr><td>マウントポイント</td><td>${escapeHtml(dev.mountpoint)}</td></tr>`;
+  if (dev.model) infoRows += `<tr><td>モデル</td><td>${escapeHtml(dev.model)}</td></tr>`;
+  if (dev.serial) infoRows += `<tr><td>シリアル</td><td>${escapeHtml(dev.serial)}</td></tr>`;
+  if (dev.uuid) infoRows += `<tr><td>UUID</td><td style="font-size:0.75rem;">${escapeHtml(dev.uuid)}</td></tr>`;
+  if (dev.partlabel) infoRows += `<tr><td>パーティションラベル</td><td>${escapeHtml(dev.partlabel)}</td></tr>`;
+  if (dev.label) infoRows += `<tr><td>ボリュームラベル</td><td>${escapeHtml(dev.label)}</td></tr>`;
+
+  let usageHtml = '';
+  if (dev.df) {
+    const pctNum = parseInt(dev.df.use_percent) || 0;
+    const barClass = pctNum > 80 ? 'danger' : pctNum > 60 ? 'warn' : '';
+    usageHtml = `
+      <div style="margin-top:0.5rem;">
+        <div style="display:flex;justify-content:space-between;font-size:0.8rem;color:var(--text-muted);margin-bottom:0.25rem;">
+          <span>${escapeHtml(dev.df.used)} / ${escapeHtml(dev.df.size)}</span>
+          <span>${escapeHtml(dev.df.avail)} 空き</span>
+        </div>
+        <div class="stat-bar"><div class="stat-bar-fill ${barClass}" style="width:${pctNum}%;"></div></div>
+        <div style="text-align:right;font-size:0.75rem;color:var(--text-muted);margin-top:0.15rem;">${escapeHtml(dev.df.use_percent)} 使用中</div>
+      </div>`;
+  }
+
+  const children = (dev.children || []).map(c => renderDiskDevice(c, depth + 1)).filter(Boolean).join('');
+
+  return `
+    <div class="stat-card" style="margin-bottom:1rem;margin-left:${indent}rem;${isPart ? 'border-left:3px solid var(--border);' : ''}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:1.2rem;height:1.2rem;flex-shrink:0;${isDisk ? 'color:var(--accent);' : ''}">
+            ${isDisk
+              ? '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'
+              : '<rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>'}
+          </svg>
+          <span style="font-weight:600;font-size:0.95rem;">${escapeHtml(dev.name)}</span>
+          <span class="badge ${typeBadgeClass}" style="font-size:0.7rem;">${typeLabel}</span>${fsLabel}
+          ${removableBadge}${readonlyBadge}
+        </div>
+        <div class="btn-group">${actionBtn}</div>
+      </div>
+      ${infoRows ? `<table class="proc-table" style="margin:0;"><tbody>${infoRows}</tbody></table>` : ''}
+      ${usageHtml}
+    </div>
+    ${children}
+  `;
+}
+
+function openDiskMountModal(deviceName, fstype) {
+  pendingMountDevice = deviceName;
+  pendingMountFstype = fstype;
+
+  document.getElementById('disk-mount-device').textContent = `/dev/${deviceName} (${fstype})`;
+  document.getElementById('disk-mount-point').value = '';
+  document.getElementById('disk-mount-status').className = 'status-msg';
+  document.querySelector('input[name="disk-mount-type"][value="temp"]').checked = true;
+  document.getElementById('disk-mount-persist-warn').style.display = 'none';
+  document.getElementById('disk-mount-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('disk-mount-point').focus(), 100);
+}
+
+function closeDiskMountModal() {
+  document.getElementById('disk-mount-modal').style.display = 'none';
+  pendingMountDevice = null;
+  pendingMountFstype = null;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('input[name="disk-mount-type"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      document.getElementById('disk-mount-persist-warn').style.display =
+        e.target.value === 'persist' ? 'block' : 'none';
+    });
+  });
+});
+
+async function submitDiskMount() {
+  if (!pendingMountDevice) return;
+
+  const mountPoint = document.getElementById('disk-mount-point').value.trim();
+  const persistent = document.querySelector('input[name="disk-mount-type"]:checked').value === 'persist';
+  const statusEl = document.getElementById('disk-mount-status');
+  const submitBtn = document.getElementById('btn-disk-mount-submit');
+
+  if (!mountPoint) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'マウント先パスを入力してください。';
+    return;
+  }
+
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> マウント中...';
+  submitBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/disks/mount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device: pendingMountDevice,
+        mount_point: mountPoint,
+        persistent: persistent,
+        fstype: pendingMountFstype,
+      }),
+    });
+    const data = await resp.json();
+    submitBtn.disabled = false;
+
+    if (data.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = data.message;
+      showStatus(data.message, 'success');
+      setTimeout(() => {
+        closeDiskMountModal();
+        loadDisks();
+      }, 1000);
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+    }
+  } catch (e) {
+    submitBtn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function unmountDisk(deviceName, mountPoint) {
+  if (!confirm(`${mountPoint} をアンマウントしますか？`)) return;
+
+  try {
+    const resp = await fetch('/api/disks/unmount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: deviceName, mount_point: mountPoint }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showStatus(data.message, 'success');
+      if (data.fstab_entry) {
+        showStatus('注意: /etc/fstabにエントリが残っています', 'info');
+      }
+      loadDisks();
+    } else {
+      showStatus(data.message, 'error');
     }
   } catch (e) {
     showStatus(`エラー: ${e.message}`, 'error');
