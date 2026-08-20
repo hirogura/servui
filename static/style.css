@@ -157,6 +157,14 @@ body {
   background: var(--warning-soft);
 }
 
+.btn-sidebar.btn-update {
+  color: var(--accent);
+}
+
+.btn-sidebar.btn-update:hover {
+  background: var(--accent-soft);
+}
+
 .btn-sidebar.btn-reboot {
   color: var(--danger);
 }

@@ -74,6 +74,90 @@ async function rebootSystem() {
   }
 }
 
+// ===== serv-UI update =====
+const SERVUI_UPDATE_MARKER = '__SERVUI_UPDATE_DONE__';
+let servuiUpdateWatching = false; // watch terminal output for the marker
+let servuiUpdateState = null;     // { t, sawDown, phase }
+
+async function updateServUI() {
+  if (!confirm('serv-UIを更新しますか？\nGitHubから最新版を取得してsetup.shを実行します。\n\n・完了まで数分かかる場合があります\n・処理中はターミナルを操作しないでください\n・完了後、serv-UIが再起動されページが更新されます')) return;
+
+  switchTab('terminal');
+  showStatus('ターミナルでアップデートを実行中...', 'info');
+
+  if (!(await waitForTerminalOpen(10000))) {
+    showStatus('ターミナルに接続できませんでした', 'error');
+    return;
+  }
+
+  servuiUpdateWatching = true;
+  beginServuiUpdateWatch();
+
+  const cmds = [
+    'cd ~',
+    'sudo git clone https://github.com/hirogura/servui.git',
+    'cd servui',
+    'sudo bash setup.sh',
+    `echo ${SERVUI_UPDATE_MARKER}`,
+  ].join('\n') + '\n';
+  ws.send(JSON.stringify({ type: 'input', data: cmds }));
+}
+
+function waitForTerminalOpen(timeoutMs) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    const check = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) resolve(true);
+      else if (Date.now() - start > timeoutMs) resolve(false);
+      else setTimeout(check, 200);
+    };
+    check();
+  });
+}
+
+function beginServuiUpdateWatch() {
+  servuiUpdateState = { t: Date.now(), sawDown: false, phase: 'watching' };
+  pollServuiUpdate();
+}
+
+function pollServuiUpdate() {
+  const st = servuiUpdateState;
+  if (!st || st.phase !== 'watching') return;
+  fetch('/api/system/info', { cache: 'no-store' })
+    .then(r => {
+      if (!st || st.phase !== 'watching') return;
+      if (!r.ok) throw new Error('not ok');
+      if (st.sawDown) {
+        st.phase = 'done';
+        showStatus('serv-UIの更新が完了しました。ページを更新します...', 'success');
+        setTimeout(() => location.reload(), 1500);
+        return;
+      }
+      if (Date.now() - st.t > 10 * 60 * 1000) {
+        st.phase = 'done';
+        showStatus('アップデートの完了を確認できませんでした。ターミナルの出力を確認してください。', 'error');
+        return;
+      }
+      setTimeout(pollServuiUpdate, 2500);
+    })
+    .catch(() => {
+      if (!st || st.phase !== 'watching') return;
+      st.sawDown = true; // server went down = restarting
+      setTimeout(pollServuiUpdate, 2500);
+    });
+}
+
+function onServuiUpdateMarker() {
+  servuiUpdateWatching = false;
+  const st = servuiUpdateState;
+  if (st && st.phase === 'watching' && !st.sawDown) {
+    // setup.sh finished without restarting the service -> restart explicitly
+    st.sawDown = true;
+    showStatus('セットアップ完了。serv-UIを再起動します...', 'info');
+    fetch('/api/servui/restart', { method: 'POST' }).catch(() => {});
+  }
+}
+
 async function shutdownSystem() {
   if (!confirm('PC（サーバー本体）をシャットダウンしますか？\nシャットダウン後はサーバーの電源が切れ、serv-UIにアクセスできなくなります。')) return;
   try {
@@ -404,6 +488,9 @@ function connectTerminal() {
 
   ws.onmessage = (event) => {
     term.write(event.data);
+    if (servuiUpdateWatching && event.data.includes(SERVUI_UPDATE_MARKER)) {
+      onServuiUpdateMarker();
+    }
   };
 
   ws.onclose = () => {
