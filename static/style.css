@@ -666,6 +666,7 @@ h2 {
   min-width: 2px;
   transition: filter 0.15s;
   overflow: hidden;
+  border-left: 1px solid var(--bg-base);
 }
 
 .disk-layout-seg:hover {
