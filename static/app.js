@@ -961,7 +961,7 @@ async function openSelfcode() {
       showStatus('selfcodeをインストール中...', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'sudo apt install -y git curl nodejs npm && curl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh && sudo bash /tmp/install-selfcode.sh\n';
+          const installCmd = 'sudo apt install -y git curl nodejs npm\ncurl -fsSL https://raw.githubusercontent.com/hirogura/selfcode/main/install-selfcode.sh -o /tmp/install-selfcode.sh\nsudo bash /tmp/install-selfcode.sh\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
