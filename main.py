@@ -877,6 +877,19 @@ async def disks_info():
                 "mountpoint": mount,
             }
 
+    def parse_size_bytes(size_str):
+        """Convert human-readable size (e.g. '50G') to bytes."""
+        if not size_str:
+            return 0
+        multipliers = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
+        size_str = str(size_str).strip()
+        if size_str[-1].upper() in multipliers:
+            return int(float(size_str[:-1]) * multipliers[size_str[-1].upper()])
+        try:
+            return int(float(size_str))
+        except ValueError:
+            return 0
+
     def parse_device(dev):
         """Recursively parse a lsblk device entry."""
         fstype = dev.get("fstype") or ""
@@ -895,6 +908,7 @@ async def disks_info():
         entry = {
             "name": name,
             "size": size,
+            "size_bytes": parse_size_bytes(size),
             "type": devtype,
             "fstype": fstype,
             "mountpoint": mountpoint,

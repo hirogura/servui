@@ -734,6 +734,81 @@ async function loadDisks() {
   }
 }
 
+function fsColor(fstype) {
+  const colors = {
+    'vfat': '#e67e22', 'fat32': '#e67e22', 'fat16': '#e67e22',
+    'ext4': '#3498db', 'ext3': '#2980b9', 'ext2': '#2471a3',
+    'xfs': '#27ae60',
+    'btrfs': '#8e44ad',
+    'swap': '#e74c3c',
+    'linux-swap': '#e74c3c', 'linux-swap(v1)': '#e74c3c',
+    'LVM2_member': '#16a085',
+    'ntfs': '#f39c12',
+    'exfat': '#d35400',
+    'iso9660': '#7f8c8d',
+  };
+  return colors[fstype] || '#5a5e6b';
+}
+
+function flattenPartitions(dev) {
+  const parts = [];
+  for (const child of (dev.children || [])) {
+    if (child.type === 'part' || child.type === 'lvm') {
+      parts.push(child);
+    }
+  }
+  return parts;
+}
+
+function renderDiskLayoutBar(dev) {
+  const partitions = flattenPartitions(dev);
+  if (partitions.length === 0) return '';
+
+  const totalBytes = dev.size_bytes || 1;
+  let segments = [];
+  let usedBytes = 0;
+
+  for (const p of partitions) {
+    const pBytes = p.size_bytes || 0;
+    const pct = Math.max((pBytes / totalBytes) * 100, 0.8);
+    usedBytes += pBytes;
+    const color = fsColor(p.fstype);
+    const fsLabel = p.fstype || '未割当';
+    const mountLabel = p.mountpoint ? ` (${p.mountpoint})` : '';
+    const tooltip = `${p.name}: ${p.size} - ${fsLabel}${mountLabel}`;
+    segments.push({ pct, color, tooltip, name: p.name, size: p.size, fstype: fsLabel });
+  }
+
+  const freeBytes = totalBytes - usedBytes;
+  if (freeBytes > 0) {
+    const freePct = Math.max((freeBytes / totalBytes) * 100, 0.3);
+    segments.push({ pct: freePct, color: '#2c2f38', tooltip: '空き領域', name: '', size: '', fstype: '' });
+  }
+
+  const segmentsHtml = segments.map(s =>
+    `<div class="disk-layout-seg" style="flex:${s.pct};background:${s.color};" title="${escapeHtml(s.tooltip)}">
+      ${s.pct > 4 ? `<span class="disk-layout-seg-label">${escapeHtml(s.name)}<br>${escapeHtml(s.size)}</span>` : ''}
+    </div>`
+  ).join('');
+
+  const legendHtml = partitions.map(p => {
+    const color = fsColor(p.fstype);
+    const mountLabel = p.mountpoint ? ` → ${p.mountpoint}` : '';
+    return `<span class="disk-layout-legend-item">
+      <span class="disk-layout-legend-dot" style="background:${color};"></span>
+      ${escapeHtml(p.name)} <span class="disk-layout-legend-size">${escapeHtml(p.size)}</span>
+      ${p.fstype ? `<span class="disk-layout-legend-fs">${escapeHtml(p.fstype)}</span>` : ''}
+      ${mountLabel ? `<span class="disk-layout-legend-mount">${escapeHtml(p.mountpoint)}</span>` : ''}
+    </span>`;
+  }).join('');
+
+  return `
+    <div class="disk-layout-wrap">
+      <div class="disk-layout-bar">${segmentsHtml}</div>
+      <div class="disk-layout-legend">${legendHtml}</div>
+    </div>`;
+}
+
 function renderDiskDevice(dev, depth) {
   const indent = depth * 1.5;
   const isDisk = dev.type === 'disk';
@@ -754,7 +829,6 @@ function renderDiskDevice(dev, depth) {
   const typeBadgeClass = isDisk ? 'badge-active' : isPart ? 'badge-other' : 'badge-inactive';
   const fsLabel = dev.label ? ` <span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.3rem;">${escapeHtml(dev.label)}</span>` : '';
 
-  // Mount/unmount button for partitions with fstype and not read-only
   let actionBtn = '';
   if (isPart && dev.fstype && !dev.readonly) {
     const safeName = escapeHtml(dev.name);
@@ -798,6 +872,7 @@ function renderDiskDevice(dev, depth) {
       </div>`;
   }
 
+  const layoutBar = isDisk ? renderDiskLayoutBar(dev) : '';
   const children = (dev.children || []).map(c => renderDiskDevice(c, depth + 1)).filter(Boolean).join('');
 
   return `
@@ -815,6 +890,7 @@ function renderDiskDevice(dev, depth) {
         </div>
         <div class="btn-group">${actionBtn}</div>
       </div>
+      ${layoutBar}
       ${infoRows ? `<table class="proc-table" style="margin:0;"><tbody>${infoRows}</tbody></table>` : ''}
       ${usageHtml}
     </div>

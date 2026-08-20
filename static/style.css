@@ -644,6 +644,84 @@ h2 {
   margin-top: 1rem;
 }
 
+/* ── Disk Layout Bar (GParted-like) ── */
+.disk-layout-wrap {
+  margin: 0.6rem 0;
+}
+
+.disk-layout-bar {
+  display: flex;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+}
+
+.disk-layout-seg {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2px;
+  transition: filter 0.15s;
+  overflow: hidden;
+}
+
+.disk-layout-seg:hover {
+  filter: brightness(1.25);
+}
+
+.disk-layout-seg-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+  line-height: 1.15;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  white-space: nowrap;
+  pointer-events: none;
+  padding: 0 2px;
+}
+
+.disk-layout-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  margin-top: 0.45rem;
+  padding: 0 0.1rem;
+}
+
+.disk-layout-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.disk-layout-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.disk-layout-legend-size {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-layout-legend-fs {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.disk-layout-legend-mount {
+  color: var(--accent);
+  font-size: 0.65rem;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .sidebar { width: 52px; }
