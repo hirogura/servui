@@ -1073,13 +1073,20 @@ async def disks_info():
     # Enrich disk entries with free space info from sfdisk
     for dev in devices:
         if dev.get("type") == "disk":
-            free_info = await get_sfdisk_free_info(dev["name"])
-            dev["free_bytes"] = free_info["total_free_bytes"]
-            part_map = {p["name"]: p for p in free_info["partitions"]}
-            for child in dev.get("children", []):
-                if child["name"] in part_map:
-                    child["extendable"] = part_map[child["name"]]["extendable"]
-                    child["max_extend_bytes"] = part_map[child["name"]]["max_extend_bytes"]
+            if not dev.get("children") and not dev.get("fstype"):
+                # Blank disk (no partition table / filesystem): sfdisk reports
+                # nothing, so treat the whole usable area as free space.
+                # Reserve the 2048-sector alignment offset plus trailing GPT sectors.
+                gpt_overhead = (2048 + 33) * 512
+                dev["free_bytes"] = max(dev.get("size_bytes", 0) - gpt_overhead, 0)
+            else:
+                free_info = await get_sfdisk_free_info(dev["name"])
+                dev["free_bytes"] = free_info["total_free_bytes"]
+                part_map = {p["name"]: p for p in free_info["partitions"]}
+                for child in dev.get("children", []):
+                    if child["name"] in part_map:
+                        child["extendable"] = part_map[child["name"]]["extendable"]
+                        child["max_extend_bytes"] = part_map[child["name"]]["max_extend_bytes"]
 
     # Enrich LVM2_member partitions with VG/LV info
     lvm_data = await _get_lvm_info()
@@ -1218,10 +1225,36 @@ async def disks_partition_create(req: Request):
         type_uuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"  # EFI System
 
     sfdisk_input = f"type={type_uuid}, size={size_sectors}"
-    res = await run_cmd(
-        _sudo(f"echo '{sfdisk_input}' | sfdisk --append --no-reread {disk_path}"),
-        timeout=15,
+
+    # Detect existing partition table; a blank disk needs an explicit GPT label
+    # (sfdisk would otherwise default to DOS, which rejects GPT type UUIDs)
+    table_check = await run_cmd(f"sfdisk -d {disk_path} 2>/dev/null", timeout=10)
+    has_table = table_check["returncode"] == 0 and any(
+        line.strip().startswith("/dev/") for line in table_check["stdout"].splitlines()
     )
+
+    if has_table:
+        res = await run_cmd(
+            _sudo(f"echo '{sfdisk_input}' | sfdisk --append --no-reread {disk_path}"),
+            timeout=15,
+        )
+    else:
+        # Cap the size so the partition fits before the last usable GPT sector
+        size_res = await run_cmd(f"lsblk -bno SIZE {disk_path} 2>/dev/null", timeout=5)
+        try:
+            total_sectors = int(size_res["stdout"].strip()) // 512
+        except ValueError:
+            total_sectors = 0
+        max_sectors = max(total_sectors - 2048 - 33, 0)
+        if max_sectors <= 0:
+            return {"success": False, "message": f"{disk_path} はパーティションを作成できる大きさがありません"}
+        if size_sectors > max_sectors:
+            size_sectors = max_sectors
+        sfdisk_script = f"label: gpt\\ntype={type_uuid}, size={size_sectors}\\n"
+        res = await run_cmd(
+            _sudo(f"printf '{sfdisk_script}' | sfdisk --no-reread {disk_path}"),
+            timeout=15,
+        )
     if res["returncode"] != 0:
         return {"success": False, "message": f"パーティション作成に失敗しました: {res['stderr']}"}
 
