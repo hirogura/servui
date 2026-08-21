@@ -17,6 +17,7 @@ ask_yn() {
 
 sudo apt update
 sudo apt upgrade -y
+sudo apt install -y curl
 curl -fsSL https://tailscale.com/install.sh | sh
 
 echo ""
