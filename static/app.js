@@ -75,88 +75,60 @@ async function rebootSystem() {
 }
 
 // ===== serv-UI update =====
-const SERVUI_UPDATE_MARKER = '__SERVUI_UPDATE_DONE__';
-let servuiUpdateWatching = false; // watch terminal output for the marker
-let servuiUpdateState = null;     // { t, sawDown, phase }
+let servuiUpdateState = null; // { t, phase }
 
 async function updateServUI() {
-  if (!confirm('serv-UIを更新しますか？\nGitHubから最新版を取得してsetup.shを実行します。\n\n・完了まで数分かかる場合があります\n・処理中はターミナルを操作しないでください\n・完了後、serv-UIが再起動されページが更新されます')) return;
+  if (!confirm('serv-UIを更新しますか？\nGitHubから最新版を取得してセットアップします。\n\n・完了まで数分かかる場合があります\n・完了後、サイドバーの「serv-UI再起動」で再起動すると新版が有効になります')) return;
 
-  switchTab('terminal');
-  showStatus('ターミナルでアップデートを実行中...', 'info');
-
-  if (!(await waitForTerminalOpen(10000))) {
-    showStatus('ターミナルに接続できませんでした', 'error');
+  showStatus('アップデートを開始しています...', 'info');
+  try {
+    const resp = await fetch('/api/system/selfupdate', { method: 'POST' });
+    const data = await resp.json();
+    if (!data.success) {
+      showStatus(data.message || 'アップデートを開始できませんでした', 'error');
+      return;
+    }
+  } catch (e) {
+    showStatus(`アップデート開始エラー: ${e.message}`, 'error');
     return;
   }
-
-  servuiUpdateWatching = true;
-  beginServuiUpdateWatch();
-
-  const cmds = [
-    'cd ~',
-    'sudo rm -rf ~/servui',
-    'git clone --depth 1 https://github.com/hirogura/servui.git ~/servui',
-    'cd ~/servui',
-    'sudo bash setup.sh',
-    `echo ${SERVUI_UPDATE_MARKER}`,
-  ].join('\n') + '\n';
-  ws.send(JSON.stringify({ type: 'input', data: cmds }));
-}
-
-function waitForTerminalOpen(timeoutMs) {
-  return new Promise(resolve => {
-    const start = Date.now();
-    const check = () => {
-      if (ws && ws.readyState === WebSocket.OPEN) resolve(true);
-      else if (Date.now() - start > timeoutMs) resolve(false);
-      else setTimeout(check, 200);
-    };
-    check();
-  });
-}
-
-function beginServuiUpdateWatch() {
-  servuiUpdateState = { t: Date.now(), sawDown: false, phase: 'watching' };
+  servuiUpdateState = { t: Date.now(), phase: 'watching' };
+  showStatus('アップデート実行中... このページを開いたままお待ちください', 'info');
   pollServuiUpdate();
 }
 
 function pollServuiUpdate() {
   const st = servuiUpdateState;
   if (!st || st.phase !== 'watching') return;
-  fetch('/api/system/info', { cache: 'no-store' })
+  fetch('/api/system/selfupdate/status', { cache: 'no-store' })
     .then(r => {
-      if (!st || st.phase !== 'watching') return;
       if (!r.ok) throw new Error('not ok');
-      if (st.sawDown) {
+      return r.json();
+    })
+    .then(data => {
+      if (!st || st.phase !== 'watching') return;
+      if (data.done && !data.running) {
         st.phase = 'done';
-        showStatus('serv-UIの更新が完了しました。ページを更新します...', 'success');
-        setTimeout(() => location.reload(), 1500);
+        showStatus('アップデート完了！サイドバーの「serv-UI再起動」を実行すると新版が有効になります', 'success');
         return;
       }
-      if (Date.now() - st.t > 10 * 60 * 1000) {
+      if (!data.running && !data.done) {
         st.phase = 'done';
-        showStatus('アップデートの完了を確認できませんでした。ターミナルの出力を確認してください。', 'error');
+        const lastLine = (data.log || '').trim().split('\n').filter(Boolean).pop() || '';
+        showStatus(`アップデートに失敗しました ${lastLine.slice(0, 120)}`, 'error');
         return;
       }
-      setTimeout(pollServuiUpdate, 2500);
+      if (Date.now() - st.t > 15 * 60 * 1000) {
+        st.phase = 'done';
+        showStatus('アップデートの状態を確認できませんでした（タイムアウト）', 'error');
+        return;
+      }
+      setTimeout(pollServuiUpdate, 3000);
     })
     .catch(() => {
       if (!st || st.phase !== 'watching') return;
-      st.sawDown = true; // server went down = restarting
-      setTimeout(pollServuiUpdate, 2500);
+      setTimeout(pollServuiUpdate, 3000);
     });
-}
-
-function onServuiUpdateMarker() {
-  servuiUpdateWatching = false;
-  const st = servuiUpdateState;
-  if (st && st.phase === 'watching' && !st.sawDown) {
-    // setup.sh finished without restarting the service -> restart explicitly
-    st.sawDown = true;
-    showStatus('セットアップ完了。serv-UIを再起動します...', 'info');
-    fetch('/api/servui/restart', { method: 'POST' }).catch(() => {});
-  }
 }
 
 async function shutdownSystem() {
@@ -489,9 +461,6 @@ function connectTerminal() {
 
   ws.onmessage = (event) => {
     term.write(event.data);
-    if (servuiUpdateWatching && event.data.includes(SERVUI_UPDATE_MARKER)) {
-      onServuiUpdateMarker();
-    }
   };
 
   ws.onclose = () => {

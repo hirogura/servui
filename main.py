@@ -1762,6 +1762,83 @@ async def restart_servui():
     return {"success": True, "stdout": "Restarting...", "errors": ""}
 
 
+# --- serv-UI self-update ---
+if os.getuid() == 0:
+    SERVUI_UPDATE_LOG = "/var/log/servui-update.log"
+    SERVUI_UPDATE_PID = "/run/servui-update.pid"
+else:
+    SERVUI_UPDATE_LOG = f"/tmp/servui-update-{os.getuid()}.log"
+    SERVUI_UPDATE_PID = f"/tmp/servui-update-{os.getuid()}.pid"
+
+
+@app.post("/api/system/selfupdate")
+async def system_selfupdate():
+    """Start serv-UI self-update as a detached process.
+
+    The updater runs independently of this server, so it always finishes
+    even though the files being replaced belong to the running service.
+    Applying the new version (service restart) is done manually by the user.
+    """
+    try:
+        with open(SERVUI_UPDATE_PID) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return {"success": False, "message": "アップデートが既に実行中です"}
+    except FileNotFoundError:
+        pass
+    except (ValueError, ProcessLookupError):
+        pass
+    except PermissionError:
+        return {"success": False, "message": "アップデートが既に実行中です"}
+
+    script = "\n".join([
+        "set -e",
+        f"echo $$ > {SERVUI_UPDATE_PID}",
+        f"trap 'rm -f {SERVUI_UPDATE_PID}' EXIT",
+        f"exec > {SERVUI_UPDATE_LOG} 2>&1",
+        'echo "[serv-UI update] start $(date)"',
+        "rm -rf /tmp/servui-update",
+        "git clone --depth 1 https://github.com/hirogura/servui.git /tmp/servui-update",
+        "bash /tmp/servui-update/setup.sh --no-restart",
+        'echo "[serv-UI update] done $(date)"',
+        "echo __SERVUI_UPDATE_DONE__",
+    ]) + "\n"
+
+    await asyncio.create_subprocess_exec(
+        "/bin/bash", "-c", script,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"success": True, "message": "アップデートを開始しました"}
+
+
+@app.get("/api/system/selfupdate/status")
+async def system_selfupdate_status():
+    """Return current self-update progress (running flag + log tail)."""
+    running = False
+    try:
+        with open(SERVUI_UPDATE_PID) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        running = True
+    except Exception:
+        running = False
+
+    log_tail = ""
+    done = False
+    try:
+        with open(SERVUI_UPDATE_LOG, errors="replace") as f:
+            content = f.read()
+        done = "__SERVUI_UPDATE_DONE__" in content
+        log_tail = content[-3000:]
+    except OSError:
+        pass
+
+    return {"running": running, "done": done, "log": log_tail}
+
+
 @app.post("/api/system/reboot")
 async def reboot_system():
     """Reboot the host system."""

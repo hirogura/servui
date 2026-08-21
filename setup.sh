@@ -37,6 +37,12 @@ if [[ $EUID -ne 0 ]]; then
   err "This script must be run as root (sudo bash setup.sh)"
 fi
 
+# --- Optional flag: --no-restart (deploy files only; restart manually) ---
+NO_RESTART=0
+if [[ "${1:-}" == "--no-restart" ]]; then
+  NO_RESTART=1
+fi
+
 # --- Check Tailscale is installed ---
 if ! command -v tailscale &>/dev/null; then
   warn "Tailscale is not installed. Installing now..."
@@ -187,13 +193,18 @@ EOF
 
 systemctl daemon-reload
 systemctl enable servui.service
-systemctl restart servui.service
 
-sleep 2
-if systemctl is-active --quiet servui.service; then
-  log "serv-UI is running on port $APP_PORT"
+if [[ $NO_RESTART -eq 1 ]]; then
+  log "Update deployed. Restart serv-UI manually to apply the new version."
 else
-  err "Failed to start serv-UI. Check: journalctl -u servui -f"
+  systemctl restart servui.service
+
+  sleep 2
+  if systemctl is-active --quiet servui.service; then
+    log "serv-UI is running on port $APP_PORT"
+  else
+    err "Failed to start serv-UI. Check: journalctl -u servui -f"
+  fi
 fi
 
 # --- Tailscale serve configuration ---
