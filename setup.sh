@@ -136,7 +136,15 @@ trap "rm -rf $TEMP_DIR" EXIT
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Existing installation found. Updating..."
   cd "$APP_DIR"
-  git pull origin main
+  # The repo may be owned by the servui user while this script runs as root.
+  # Without this, git aborts with "detected dubious ownership" and the
+  # update silently stops before the service is restarted.
+  if ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$APP_DIR"; then
+    git config --global --add safe.directory "$APP_DIR"
+  fi
+  # Discard any local modifications and take the GitHub version
+  git fetch origin main
+  git reset --hard FETCH_HEAD
 else
   git clone --depth 1 "$REPO_URL" "$TEMP_DIR"
   mkdir -p "$APP_DIR"

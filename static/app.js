@@ -95,8 +95,9 @@ async function updateServUI() {
 
   const cmds = [
     'cd ~',
-    'sudo git clone https://github.com/hirogura/servui.git',
-    'cd servui',
+    'sudo rm -rf ~/servui',
+    'git clone --depth 1 https://github.com/hirogura/servui.git ~/servui',
+    'cd ~/servui',
     'sudo bash setup.sh',
     `echo ${SERVUI_UPDATE_MARKER}`,
   ].join('\n') + '\n';
