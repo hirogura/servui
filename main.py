@@ -1206,6 +1206,9 @@ async def disks_partition_create(req: Request):
     fstype = data.get("fstype", "ext4").strip()
     mount_point = data.get("mount_point", "").strip()
     persistent = data.get("persistent", False)
+    raw_label = data.get("label", "") or ""
+    # Filesystem-safe label: alphanumerics, dot, underscore, hyphen only
+    label = "".join(c for c in raw_label.strip() if c.isalnum() or c in "._-")[:16]
 
     if not disk_name or size_sectors <= 0:
         raise HTTPException(status_code=400, detail="disk and size_sectors are required")
@@ -1224,7 +1227,8 @@ async def disks_partition_create(req: Request):
     elif fstype in ("vfat", "fat32", "fat16"):
         type_uuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"  # EFI System
 
-    sfdisk_input = f"type={type_uuid}, size={size_sectors}"
+    name_field = f', name="{label}"' if label else ""
+    sfdisk_input = f"type={type_uuid}, size={size_sectors}{name_field}"
 
     # Detect existing partition table; a blank disk needs an explicit GPT label
     # (sfdisk would otherwise default to DOS, which rejects GPT type UUIDs)
@@ -1250,7 +1254,7 @@ async def disks_partition_create(req: Request):
             return {"success": False, "message": f"{disk_path} はパーティションを作成できる大きさがありません"}
         if size_sectors > max_sectors:
             size_sectors = max_sectors
-        sfdisk_script = f"label: gpt\\ntype={type_uuid}, size={size_sectors}\\n"
+        sfdisk_script = f"label: gpt\\ntype={type_uuid}, size={size_sectors}{name_field}\\n"
         res = await run_cmd(
             _sudo(f"printf '{sfdisk_script}' | sfdisk --no-reread {disk_path}"),
             timeout=15,
@@ -1281,13 +1285,18 @@ async def disks_partition_create(req: Request):
     new_part_path = f"/dev/{new_part_name}"
 
     # Format filesystem (skip for swap)
+    label_flag = "-n" if fstype in ("vfat", "fat32", "fat16") else "-L"
+    label_opt = f" {label_flag} '{label}'" if label else ""
     if fstype == "swap":
-        mkfs_res = await run_cmd(_sudo(f"mkswap {new_part_path}"), timeout=30)
+        mkfs_res = await run_cmd(_sudo(f"mkswap{label_opt} {new_part_path}"), timeout=30)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"swapの作成に失敗しました: {mkfs_res['stderr']}"}
-        return {"success": True, "message": f"パーティション {new_part_name} を作成し、swapとして初期化しました", "device": new_part_name}
+        msg = f"パーティション {new_part_name} を作成し、swapとして初期化しました"
+        if label:
+            msg += f" (ラベル: {label})"
+        return {"success": True, "message": msg, "device": new_part_name}
     else:
-        mkfs_cmd = f"mkfs.{fstype} {new_part_path}"
+        mkfs_cmd = f"mkfs.{fstype}{label_opt} {new_part_path}"
         mkfs_res = await run_cmd(_sudo(mkfs_cmd), timeout=60)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"ファイルシステム作成に失敗しました: {mkfs_res['stderr']}"}
@@ -1312,6 +1321,8 @@ async def disks_partition_create(req: Request):
                     return {"success": True, "message": f"パーティション {new_part_name} を作成しましたが、/etc/fstabへの追加に失敗しました: {add_fstab['stderr']}", "device": new_part_name}
 
     msg = f"パーティション {new_part_name} を作成しました ({fstype})"
+    if label:
+        msg += f" ラベル: {label}"
     if mount_point:
         msg += f" → {mount_point}"
     if persistent and mount_point:

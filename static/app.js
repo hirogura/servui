@@ -1263,6 +1263,7 @@ function openDiskCreateModal(diskName, totalBytes, freeBytes) {
   document.getElementById('disk-create-size').max = freeMb;
   document.getElementById('disk-create-size-max').textContent = `${freeMb} MB`;
   document.getElementById('disk-create-fstype').value = 'ext4';
+  document.getElementById('disk-create-label').value = '';
   document.getElementById('disk-create-mount').value = '';
   document.getElementById('disk-create-persistent').checked = false;
   document.getElementById('disk-create-persistent-warn').style.display = 'none';
@@ -1282,6 +1283,7 @@ async function submitDiskCreate() {
 
   const sizeMb = parseInt(document.getElementById('disk-create-size').value) || 0;
   const fstype = document.getElementById('disk-create-fstype').value;
+  const label = document.getElementById('disk-create-label').value.trim();
   const mountPoint = document.getElementById('disk-create-mount').value.trim();
   const persistent = document.getElementById('disk-create-persistent').checked;
   const statusEl = document.getElementById('disk-create-status');
@@ -1305,7 +1307,14 @@ async function submitDiskCreate() {
     return;
   }
 
-  if (!confirm(`'/dev/${pendingCreateDisk}' に ${sizeMb}MB の ${fstype} パーティションを作成しますか？`)) return;
+  if (label && !/^[a-zA-Z0-9._-]+$/.test(label)) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'ラベル名は半角英数字と . _ - のみ使用できます。';
+    return;
+  }
+
+  const labelInfo = label ? ` ラベル「${label}」` : '';
+  if (!confirm(`'/dev/${pendingCreateDisk}' に ${sizeMb}MB の ${fstype} パーティション${labelInfo}を作成しますか？`)) return;
 
   const sizeSectors = Math.floor(sizeMb * 1024 * 1024 / 512);
   statusEl.className = 'status-msg show info';
@@ -1320,6 +1329,7 @@ async function submitDiskCreate() {
         disk: pendingCreateDisk,
         size_sectors: sizeSectors,
         fstype: fstype,
+        label: label,
         mount_point: mountPoint,
         persistent: persistent,
       }),
