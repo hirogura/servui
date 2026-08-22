@@ -1,5 +1,26 @@
+# --- Python ---
 venv/
 __pycache__/
 *.pyc
-fleet_pins.json
-fleet_pins.json.tmp
+
+# --- 個人情報・サーバー情報を含むランタイムデータ(絶対にコミットしない) ---
+# ピン留めしたTailnetホスト名・IPなどが含まれる
+fleet_pins.json*
+servui-fleet-*.json
+*.local.json
+
+# --- ログ・一時ファイル ---
+*.log
+*.pid
+*.swp
+.DS_Store
+
+# --- 秘密鍵・認証情報の誤コミット防止 ---
+.env
+.env.*
+*.key
+*.pem
+*.p12
+id_rsa*
+credentials*.json
+*token*.json
