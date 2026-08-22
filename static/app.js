@@ -1974,6 +1974,36 @@ async function cleanupGrubBackups() {
   }
 }
 
+async function downloadIsoFromWeb() {
+  const input = document.getElementById('grub-iso-dl-url');
+  const statusEl = document.getElementById('grub-iso-dl-status');
+  const btn = document.getElementById('btn-grub-iso-dl');
+  const url = (input.value || '').trim();
+  if (!url) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'ISOイメージのURLを入力してください';
+    return;
+  }
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> /iso にダウンロード中... (ISOのサイズによっては数分〜数十分かかる場合があります)';
+  try {
+    const resp = await fetch('/api/grub/iso-download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = await resp.json();
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = data.message;
+    if (data.success) input.value = '';
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+  btn.disabled = false;
+}
+
 // --- Helpers ---
 function escapeHtml(str) {
   if (!str) return '';

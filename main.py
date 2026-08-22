@@ -21,6 +21,7 @@ import sys
 import termios
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.1.0")
+app = FastAPI(title="serv-UI", version="1.2.0")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2754,6 +2755,48 @@ async def grub_next_boot_menu():
     if en["returncode"] != 0:
         msg += "\n警告: systemdユニットの有効化に失敗しました: " + en["stderr"].strip()
     return {"success": True, "message": msg}
+
+
+@app.post("/api/grub/iso-download")
+async def grub_iso_download(req: Request):
+    """Download an ISO image from a direct URL into /iso using wget."""
+    data = await req.json()
+    url = (data.get("url") or "").strip()
+    if not url:
+        return {"success": False, "message": "ISOイメージのURLを入力してください"}
+    if not re.match(r"^https?://", url):
+        return {"success": False, "message": "http:// または https:// で始まるURLを入力してください"}
+    if any(ch in url for ch in ('"', "'", "`", "\\", "\n", "\r", "$", ";", "&", "|", "<", ">")):
+        return {"success": False, "message": "URLに使用できない文字が含まれています"}
+
+    w = await run_cmd("which wget")
+    if w["returncode"] != 0:
+        return {"success": False, "message": "wget が見つかりません"}
+
+    fname = os.path.basename(urllib.parse.urlparse(url).path)
+    if not fname.lower().endswith(".iso"):
+        return {"success": False, "message": "URLの末尾が.isoとなっている直接リンクを指定してください"}
+    if any(ch in fname for ch in ('"', "'", "`", "\\", "$", ";", "&", "|", "<", ">")):
+        return {"success": False, "message": "ファイル名に使用できない文字が含まれています"}
+
+    mnt = await run_cmd("findmnt -n --target /iso", timeout=5)
+    if mnt["returncode"] != 0:
+        return {"success": False, "message": "/iso に保存用パーティションがマウントされていません"}
+
+    dest = f"/iso/{fname}"
+    res = await run_cmd(
+        _sudo(f"wget -q --tries=3 --timeout=60 -O {shlex.quote(dest)} {shlex.quote(url)}"),
+        timeout=7200,
+    )
+    if res["returncode"] != 0:
+        await run_cmd(_sudo(f"rm -f {shlex.quote(dest)}"))
+        err_lines = [l for l in res["stderr"].splitlines() if l.strip()]
+        err = err_lines[-1] if err_lines else f"wget exit code {res['returncode']}"
+        return {"success": False, "message": f"ダウンロードに失敗しました: {err}"}
+
+    sz = await run_cmd(f"du -sh {shlex.quote(dest)} 2>/dev/null | cut -f1")
+    size = sz["stdout"].strip() or "?"
+    return {"success": True, "message": f"{dest} に保存しました（{size}）"}
 
 
 # ============================================================

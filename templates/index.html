@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.1.0</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.2.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -505,6 +505,22 @@
           <button class="btn btn-success" id="btn-grub-add" onclick="submitGrubAdd()" style="display:none;">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             選択したISOからエントリーを追加
+          </button>
+        </div>
+      </div>
+
+      <h2>WebからISOダウンロード</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">ISOイメージの直接URLを入力して、/iso へダウンロードします。</p>
+        <div class="form-group">
+          <label for="grub-iso-dl-url">ISOイメージのURL</label>
+          <input type="text" id="grub-iso-dl-url" placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04.3-live-server-amd64.iso" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+        </div>
+        <div id="grub-iso-dl-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;">
+          <button class="btn btn-primary" id="btn-grub-iso-dl" onclick="downloadIsoFromWeb()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Webからダウンロード
           </button>
         </div>
       </div>
