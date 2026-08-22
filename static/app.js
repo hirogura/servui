@@ -416,6 +416,56 @@ async function fixPackages() {
   }
 }
 
+async function forceUpgradeAll() {
+  if (!confirm('Phased Updates も含めて全パッケージを強制更新しますか？')) return;
+
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = '<span class="spinner"></span> 全パッケージを強制更新中... (数分かかる場合があります)';
+
+  try {
+    const resp = await fetch('/api/packages/force-upgrade', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = '全パッケージの強制更新が完了しました。';
+      checkUpdates();
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `更新に失敗しました: ${cleanErr}` : '更新に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
+async function autoremovePackages() {
+  if (!confirm('不要なパッケージを削除しますか？')) return;
+
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = '<span class="spinner"></span> 不要なパッケージを削除中...';
+
+  try {
+    const resp = await fetch('/api/packages/autoremove', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = '不要なパッケージを削除しました。';
+      checkUpdates();
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `削除に失敗しました: ${cleanErr}` : '削除に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
 // --- Terminal ---
 function connectTerminal() {
   if (ws && ws.readyState === WebSocket.OPEN) {

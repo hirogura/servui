@@ -433,6 +433,31 @@ async def fix_packages():
     }
 
 
+@app.post("/api/packages/force-upgrade")
+async def force_upgrade_packages():
+    """Force-upgrade all packages including phased updates."""
+    result = await run_cmd(
+        _sudo("apt -o APT::Get::Always-Include-Phased-Updates=true upgrade -y"),
+        timeout=600,
+    )
+    return {
+        "success": result["returncode"] == 0,
+        "output": result["stdout"],
+        "errors": result["stderr"],
+    }
+
+
+@app.post("/api/packages/autoremove")
+async def autoremove_packages():
+    """Remove packages that are no longer needed."""
+    result = await run_cmd(_sudo("apt autoremove -y"), timeout=300)
+    return {
+        "success": result["returncode"] == 0,
+        "output": result["stdout"],
+        "errors": result["stderr"],
+    }
+
+
 
 # ============================================================
 # 4. Web Terminal (WebSocket + PTY)
