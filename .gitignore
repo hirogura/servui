@@ -1,3 +1,5 @@
 venv/
 __pycache__/
 *.pyc
+fleet_pins.json
+fleet_pins.json.tmp
