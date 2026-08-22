@@ -157,6 +157,10 @@ async function loadDashboard() {
     const resp = await fetch('/api/system/info');
     const data = await resp.json();
 
+    // サイドバーのホスト名表示
+    const hostEl = document.getElementById('sidebar-hostname');
+    if (hostEl && data.hostname) hostEl.textContent = data.hostname;
+
     // CPU
     const cpuPct = data.cpu.percent;
     document.getElementById('cpu-usage').textContent = `${cpuPct}%`;
