@@ -2220,6 +2220,50 @@ async function runRestore() {
 // --- serv-UI Fleet (一括管理) ---
 let fleetNodes = [];
 let fleetDetectLoading = false;
+let fleetSettings = { intervalMs: 5000, pauseHidden: false };
+let fleetTimer = null;
+
+const FLEET_SETTINGS_KEY = 'servui_fleet_settings';
+
+function loadFleetSettings() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FLEET_SETTINGS_KEY) || '{}');
+    if ([5000, 10000, 15000, 30000, 60000].includes(raw.intervalMs)) {
+      fleetSettings.intervalMs = raw.intervalMs;
+    }
+    if (typeof raw.pauseHidden === 'boolean') {
+      fleetSettings.pauseHidden = raw.pauseHidden;
+    }
+  } catch (e) {}
+  const selI = document.getElementById('fleet-interval-select');
+  const selH = document.getElementById('fleet-hidden-select');
+  if (selI) selI.value = String(fleetSettings.intervalMs);
+  if (selH) selH.value = fleetSettings.pauseHidden ? 'on' : 'off';
+}
+
+function saveFleetSettings() {
+  const selI = document.getElementById('fleet-interval-select');
+  const selH = document.getElementById('fleet-hidden-select');
+  if (selI) fleetSettings.intervalMs = parseInt(selI.value, 10) || 5000;
+  if (selH) fleetSettings.pauseHidden = selH.value === 'on';
+  try {
+    localStorage.setItem(FLEET_SETTINGS_KEY, JSON.stringify(fleetSettings));
+  } catch (e) {}
+  restartFleetTimer();
+  // 間隔を短くした場合は即時更新
+  if (currentTab === 'fleet' && !(fleetSettings.pauseHidden && document.hidden)) {
+    loadFleetPins();
+  }
+}
+
+function restartFleetTimer() {
+  if (fleetTimer) clearInterval(fleetTimer);
+  fleetTimer = setInterval(() => {
+    if (currentTab !== 'fleet') return;
+    if (fleetSettings.pauseHidden && document.hidden) return;
+    loadFleetPins();
+  }, fleetSettings.intervalMs);
+}
 
 async function loadFleetPage() {
   loadFleetPins();
@@ -2411,9 +2455,18 @@ function refreshFleetView() {
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
+  loadFleetSettings();
+  restartFleetTimer();
+
+  // 非表示中の更新を停止している場合、再表示したタイミングで即時更新
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && currentTab === 'fleet' && fleetSettings.pauseHidden) {
+      loadFleetPins();
+    }
+  });
+
   refreshInterval = setInterval(() => {
     if (currentTab === 'dashboard') loadDashboard();
-    else if (currentTab === 'fleet') loadFleetPins();
   }, 5000);
 });
 

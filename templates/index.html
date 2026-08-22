@@ -576,6 +576,30 @@
         <p class="muted">ピン留めされたserv-UIはありません。下の「serv-UI自動検出」で検出したサーバーをピン留めすると、ここに固定表示されます。</p>
       </div>
 
+      <h2>更新設定</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label for="fleet-interval-select">更新間隔</label>
+            <select id="fleet-interval-select" onchange="saveFleetSettings()" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="5000">5秒</option>
+              <option value="10000">10秒</option>
+              <option value="15000">15秒</option>
+              <option value="30000">30秒</option>
+              <option value="60000">1分</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label for="fleet-hidden-select">タブが非表示の時は更新を停止</label>
+            <select id="fleet-hidden-select" onchange="saveFleetSettings()" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="off">無効</option>
+              <option value="on">有効</option>
+            </select>
+          </div>
+        </div>
+        <p class="muted" style="font-size:0.72rem;margin-top:0.6rem;margin-bottom:0;">ピン留めされたserv-UIの状態を指定した間隔で自動更新します。設定はこのブラウザに保存されます。</p>
+      </div>
+
       <h2>serv-UI自動検出</h2>
       <div class="stat-card" style="margin-bottom:1rem;">
         <p class="muted" style="margin-bottom:0.75rem;">Tailnet内で稼働中のserv-UIを検出し、一覧表示します。ホスト名をクリックすると、そのserv-UIを新しいタブで開きます。</p>
@@ -590,6 +614,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>
