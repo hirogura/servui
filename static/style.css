@@ -755,6 +755,65 @@ select:disabled {
   font-size: 0.65rem;
 }
 
+/* ── Fleet (serv-UI一括管理) ── */
+.fleet-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.fleet-host-link {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+
+.fleet-host-link:hover { text-decoration: underline; }
+
+.fleet-card .icon-pin {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.fleet-metric { margin-bottom: 0.6rem; }
+.fleet-metric:last-child { margin-bottom: 0; }
+
+.fleet-metric-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.25rem;
+}
+
+.fleet-metric-val {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.fleet-metric-detail {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.68rem;
+  margin-left: 0.2rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.fleet-offline { opacity: 0.65; }
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .sidebar { width: 52px; }

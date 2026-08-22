@@ -38,6 +38,8 @@ function switchTab(tab) {
     loadGrub();
   } else if (tab === 'backup') {
     loadBackupPage();
+  } else if (tab === 'fleet') {
+    loadFleetPage();
   }
 }
 
@@ -2215,11 +2217,203 @@ async function runRestore() {
   await sendToTerminal(cmdData.cmd, `${cmdData.message} で復元を開始します（自動的に再起動します）`);
 }
 
+// --- serv-UI Fleet (一括管理) ---
+let fleetNodes = [];
+let fleetDetectLoading = false;
+
+async function loadFleetPage() {
+  loadFleetPins();
+  if (fleetNodes.length) renderFleetDetect();
+}
+
+async function loadFleetPins() {
+  const container = document.getElementById('fleet-pinned-container');
+  try {
+    const resp = await fetch('/api/fleet/pins', { cache: 'no-store' });
+    const data = await resp.json();
+    renderFleetPinned(data.pins || []);
+  } catch (e) {
+    container.innerHTML = `<p class="muted text-danger">ピン留め情報の取得エラー: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderFleetPinned(pins) {
+  const container = document.getElementById('fleet-pinned-container');
+  if (!pins.length) {
+    container.innerHTML = '<p class="muted">ピン留めされたserv-UIはありません。「serv-UI自動検出」で検出したサーバーをピン留めすると、ここに固定表示されます。</p>';
+    return;
+  }
+  container.innerHTML = `<div class="stats-grid">${pins.map(n => renderFleetCard(n)).join('')}</div>`;
+}
+
+function renderFleetCard(n) {
+  const name = n.hostname || n.key;
+  const selfBadge = n.is_self ? '<span class="badge badge-active" style="font-size:0.62rem;">このPC</span>' : '';
+  const offBadge = n.reachable ? '' : '<span class="badge badge-warn" style="font-size:0.62rem;">応答なし</span>';
+
+  let body;
+  if (n.reachable && n.info) {
+    const inf = n.info;
+    const tempTxt = (inf.cpu_temp !== null && inf.cpu_temp !== undefined) ? `${inf.cpu_temp}°C` : '--';
+    body =
+      fleetMetricRow('CPU使用率・温度', inf.cpu_percent, tempTxt) +
+      fleetMetricRow('メモリ使用率', inf.mem_percent, `${fmtGiB(inf.mem_used)} / ${fmtGiB(inf.mem_total)}`) +
+      fleetMetricRow('ディスク使用量', inf.disk_percent, `${fmtGiB(inf.disk_used)} / ${fmtGiB(inf.disk_total)}`);
+  } else {
+    body = '<div class="muted" style="font-size:0.78rem;padding:0.4rem 0;">serv-UIに接続できませんでした。</div>';
+  }
+
+  return `
+    <div class="stat-card fleet-card${n.reachable ? '' : ' fleet-offline'}">
+      <div class="fleet-card-head">
+        <div class="wifi-ssid-cell">
+          <svg class="icon-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>
+          <a class="fleet-host-link" href="${escapeHtml(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(name)}</a>
+          ${selfBadge}${offBadge}
+        </div>
+        <button class="btn btn-sm btn-secondary" onclick="unpinFleetNode('${escapeJs(n.key)}')" title="ピン留めを解除">解除</button>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function fleetMetricRow(label, pct, detail) {
+  const p = (typeof pct === 'number') ? Math.round(pct) : null;
+  const barClass = p === null ? '' : p > 80 ? 'danger' : p > 60 ? 'warn' : '';
+  return `
+    <div class="fleet-metric">
+      <div class="fleet-metric-label">
+        <span>${label}</span>
+        <span><span class="fleet-metric-val">${p === null ? '--' : p + '%'}</span> <span class="fleet-metric-detail">${escapeHtml(detail || '')}</span></span>
+      </div>
+      <div class="stat-bar"><div class="stat-bar-fill ${barClass}" style="width:${p === null ? 0 : p}%;"></div></div>
+    </div>`;
+}
+
+function fmtGiB(bytes) {
+  if (bytes === null || bytes === undefined) return '--';
+  const g = bytes / 1073741824;
+  return g >= 1024 ? (g / 1024).toFixed(1) + ' TB' : g.toFixed(1) + ' GB';
+}
+
+async function detectFleet() {
+  if (fleetDetectLoading) return;
+  const btn = document.getElementById('btn-fleet-detect');
+  const container = document.getElementById('fleet-detect-container');
+  fleetDetectLoading = true;
+  btn.disabled = true;
+  container.innerHTML = '<p class="muted"><span class="spinner"></span> Tailnet内のserv-UIを検出中... (ノード数によっては時間がかかります)</p>';
+  try {
+    const resp = await fetch('/api/fleet/detect', { cache: 'no-store' });
+    const data = await resp.json();
+    if (!resp.ok || data.success === false) throw new Error(data.error || `HTTP ${resp.status}`);
+    fleetNodes = data.nodes || [];
+    renderFleetDetect();
+    showStatus(`稼働中のserv-UIを${data.count}件検出しました`, data.count ? 'success' : 'info');
+  } catch (e) {
+    container.innerHTML = `<p class="muted text-danger">検出エラー: ${escapeHtml(e.message)}</p>`;
+  } finally {
+    fleetDetectLoading = false;
+    btn.disabled = false;
+  }
+}
+
+function renderFleetDetect() {
+  const container = document.getElementById('fleet-detect-container');
+  if (!fleetNodes.length) {
+    container.innerHTML = '<p class="muted">Tailnet内に稼働中のserv-UIは見つかりませんでした。</p>';
+    return;
+  }
+  const rows = fleetNodes.map((n, i) => {
+    const inf = n.info || {};
+    const pinBtn = n.pinned
+      ? `<button class="btn btn-sm btn-secondary" onclick="unpinFleetNode('${escapeJs(n.key)}')">解除</button>`
+      : `<button class="btn btn-sm btn-primary" onclick="pinFleetNode(${i})">ピン留め</button>`;
+    const st = n.reachable
+      ? '<span class="badge badge-active">稼働中</span>'
+      : '<span class="badge badge-other">応答なし</span>';
+    let cpu = '--', mem = '--', disk = '--';
+    if (n.reachable) {
+      cpu = (inf.cpu_percent === null || inf.cpu_percent === undefined) ? '--'
+        : `${Math.round(inf.cpu_percent)}%${(inf.cpu_temp !== null && inf.cpu_temp !== undefined) ? ` / ${inf.cpu_temp}°C` : ''}`;
+      mem = (inf.mem_percent === null || inf.mem_percent === undefined) ? '--'
+        : `${Math.round(inf.mem_percent)}% (${fmtGiB(inf.mem_used)} / ${fmtGiB(inf.mem_total)})`;
+      disk = (inf.disk_percent === null || inf.disk_percent === undefined) ? '--'
+        : `${Math.round(inf.disk_percent)}% (${fmtGiB(inf.disk_used)} / ${fmtGiB(inf.disk_total)})`;
+    }
+    return `
+      <tr>
+        <td>
+          <a class="fleet-host-link" href="${escapeHtml(n.url || '#')}" target="_blank" rel="noopener" title="新しいタブで開く">${escapeHtml(n.hostname)}</a>
+          ${n.is_self ? '<span class="badge badge-other" style="font-size:0.62rem;margin-left:0.3rem;">このPC</span>' : ''}
+        </td>
+        <td>${st}</td>
+        <td>${cpu}</td>
+        <td>${mem}</td>
+        <td>${disk}</td>
+        <td>${pinBtn}</td>
+      </tr>`;
+  }).join('');
+  container.innerHTML = `
+    <table class="proc-table">
+      <thead>
+        <tr><th>ホスト名</th><th>状態</th><th>CPU使用率・温度</th><th>メモリ使用率</th><th>ディスク使用量</th><th>操作</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function pinFleetNode(idx) {
+  const n = fleetNodes[idx];
+  if (!n) return;
+  try {
+    const resp = await fetch('/api/fleet/pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: n.key, fqdn: n.fqdn, hostname: n.hostname, ips: n.ips }),
+    });
+    const data = await resp.json();
+    showStatus(data.message || 'ピン留めしました', data.success !== false ? 'success' : 'error');
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+  refreshFleetView();
+}
+
+async function unpinFleetNode(key) {
+  try {
+    const resp = await fetch('/api/fleet/unpin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    const data = await resp.json();
+    showStatus(data.message || 'ピン留めを解除しました', data.success !== false ? 'success' : 'error');
+  } catch (e) {
+    showStatus(`エラー: ${e.message}`, 'error');
+  }
+  refreshFleetView();
+}
+
+function refreshFleetView() {
+  const dn = key => fleetNodes.find(n => n.key === key);
+  fetch('/api/fleet/pins', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(data => {
+      const pinnedKeys = new Set((data.pins || []).map(p => p.key));
+      fleetNodes.forEach(n => { n.pinned = pinnedKeys.has(n.key); });
+      renderFleetDetect();
+    })
+    .catch(() => {});
+  loadFleetPins();
+}
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
   refreshInterval = setInterval(() => {
     if (currentTab === 'dashboard') loadDashboard();
+    else if (currentTab === 'fleet') loadFleetPins();
   }, 5000);
 });
 

@@ -14,12 +14,14 @@ import re
 import select
 import shlex
 import signal
+import ssl
 import struct
 import subprocess
 import sys
 import termios
 import tempfile
 import threading
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -2727,6 +2729,244 @@ async def grub_next_boot_menu():
     if en["returncode"] != 0:
         msg += "\n警告: systemdユニットの有効化に失敗しました: " + en["stderr"].strip()
     return {"success": True, "message": msg}
+
+
+# ============================================================
+# 9. serv-UI Fleet Management (Tailnet-wide bulk management)
+# ============================================================
+FLEET_PINS_FILE = Path(__file__).parent / "fleet_pins.json"
+SERVUI_SERVE_PORT = 3355
+_SSL_UNVERIFIED = ssl._create_unverified_context()
+_FQDN_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$"
+)
+_TS_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def _load_fleet_pins() -> list[dict]:
+    """Load pinned serv-UI hosts from fleet_pins.json."""
+    try:
+        with open(FLEET_PINS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, dict) and p.get("key")]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _save_fleet_pins(pins: list[dict]) -> None:
+    tmp = FLEET_PINS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(pins, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(FLEET_PINS_FILE)
+
+
+def _fleet_pin_key(fqdn: str, ips: list[str]) -> str | None:
+    """Stable key for a node: FQDN when available, otherwise Tailscale IP."""
+    fqdn = (fqdn or "").strip().rstrip(".").lower()
+    if fqdn:
+        return fqdn
+    for ip in ips or []:
+        if _TS_IP_RE.match(str(ip)):
+            return str(ip)
+    return None
+
+
+def _fetch_remote_system_info_sync(candidates: list[tuple[str, ssl.SSLContext | None]],
+                                   timeout: float = 3.0) -> dict | None:
+    """Try candidate URLs in order; return parsed /api/system/info JSON of first success."""
+    for url, ctx in candidates:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "servui-fleet"})
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                if resp.status != 200:
+                    continue
+                return json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+    return None
+
+
+async def _fetch_remote_system_info(fqdn: str, ips: list[str] | None = None,
+                                    port: int = SERVUI_SERVE_PORT) -> dict | None:
+    candidates = []
+    if fqdn:
+        # LE cert issued for <host>.<tailnet>.ts.net is publicly trusted
+        candidates.append((f"https://{fqdn}:{port}/api/system/info", None))
+    for ip in (ips or []):
+        if not _TS_IP_RE.match(str(ip)):
+            continue
+        # Fallback: direct Tailscale IP (cert is issued for the FQDN -> skip verify)
+        candidates.append((f"https://{ip}:{port}/api/system/info", _SSL_UNVERIFIED))
+    if not candidates:
+        return None
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _fetch_remote_system_info_sync, candidates)
+
+
+def _extract_fleet_info(info: dict | None) -> dict | None:
+    """Pick the fields shown on the bulk-management page from /api/system/info."""
+    if not isinstance(info, dict):
+        return None
+    cpu = info.get("cpu") or {}
+    mem = info.get("memory") or {}
+    disk = info.get("disk") or {}
+    return {
+        "cpu_percent": cpu.get("percent"),
+        "cpu_temp": cpu.get("temp"),
+        "mem_percent": mem.get("percent"),
+        "mem_used": mem.get("used"),
+        "mem_total": mem.get("total"),
+        "disk_percent": disk.get("percent"),
+        "disk_used": disk.get("used"),
+        "disk_total": disk.get("total"),
+        "os": info.get("os"),
+        "uptime_seconds": info.get("uptime_seconds"),
+        "reported_hostname": info.get("hostname"),
+    }
+
+
+def _fleet_node_from_ts_entry(entry: dict) -> dict | None:
+    """Convert a tailscale status Self/Peer entry into a fleet node dict."""
+    if not isinstance(entry, dict):
+        return None
+    dns = (entry.get("DNSName") or "").strip().rstrip(".")
+    ips = [str(i) for i in (entry.get("TailscaleIPs") or [])]
+    short = (entry.get("HostName") or "").strip() or (dns.split(".")[0] if dns else "")
+    key = _fleet_pin_key(dns, ips)
+    if not key:
+        return None
+    online = entry.get("Online")
+    if entry.get("Self") is True:
+        online = True
+    return {
+        "key": key,
+        "hostname": short or key,
+        "fqdn": dns,
+        "ips": ips,
+        "online": bool(online),
+    }
+
+
+async def _probe_fleet_node(node: dict, semaphore: asyncio.Semaphore) -> dict:
+    """Probe one node's serv-UI and collect its system info."""
+    display_host = node["fqdn"] or (node["ips"][0] if node["ips"] else node["key"])
+    out = {
+        **node,
+        "port": SERVUI_SERVE_PORT,
+        "url": f"https://{display_host}:{SERVUI_SERVE_PORT}/",
+        "reachable": False,
+        "info": None,
+    }
+    raw = None
+    async with semaphore:
+        try:
+            raw = await _fetch_remote_system_info(node.get("fqdn", ""), node.get("ips"))
+        except Exception:
+            raw = None
+    if raw is not None:
+        out["reachable"] = True
+        out["info"] = _extract_fleet_info(raw)
+    return out
+
+
+async def _probe_pinned_nodes(pins: list[dict]) -> list[dict]:
+    sem = asyncio.Semaphore(8)
+
+    async def probe(pin: dict) -> dict:
+        node = {
+            "key": pin["key"],
+            "hostname": pin.get("hostname") or pin["key"].split(".")[0],
+            "fqdn": pin.get("fqdn", ""),
+            "ips": pin.get("ips") or [],
+            "online": True,
+            "is_self": False,
+        }
+        return await _probe_fleet_node(node, sem)
+
+    return list(await asyncio.gather(*[probe(p) for p in pins]))
+
+
+@app.get("/api/fleet/detect")
+async def fleet_detect():
+    """Detect serv-UI instances running in the Tailnet.
+
+    Lists all online peers (plus this host), probes their serv-UI
+    (https://<node>:3355) and collects live stats from reachable ones.
+    """
+    ts = await run_cmd("tailscale status --json", timeout=10)
+    if ts["returncode"] != 0:
+        return {"success": False,
+                "error": f"tailscale status の取得に失敗しました: {ts['stderr'].strip() or 'Tailscaleが利用できません'}"}
+    try:
+        data = json.loads(ts["stdout"])
+    except json.JSONDecodeError:
+        return {"success": False, "error": "tailscale status の解析に失敗しました"}
+
+    nodes = []
+    self_node = _fleet_node_from_ts_entry(data.get("Self") or {})
+    if self_node:
+        self_node["is_self"] = True
+        nodes.append(self_node)
+    for peer in (data.get("Peer") or {}).values():
+        n = _fleet_node_from_ts_entry(peer)
+        if n and n["online"]:
+            nodes.append(n)
+
+    pinned_keys = {p["key"] for p in _load_fleet_pins()}
+    for n in nodes:
+        n["pinned"] = n["key"] in pinned_keys
+
+    sem = asyncio.Semaphore(8)
+    results = list(await asyncio.gather(*[_probe_fleet_node(n, sem) for n in nodes]))
+    results.sort(key=lambda r: (not r["reachable"], r["hostname"].lower()))
+    running = sum(1 for r in results if r["reachable"])
+    return {"success": True, "nodes": results, "count": running}
+
+
+@app.get("/api/fleet/pins")
+async def fleet_pins_list():
+    """Return pinned serv-UI hosts with live stats."""
+    pins = _load_fleet_pins()
+    results = await _probe_pinned_nodes(pins)
+    order = {p["key"]: i for i, p in enumerate(pins)}
+    results.sort(key=lambda r: order.get(r["key"], len(order)))
+    return {"pins": results}
+
+
+@app.post("/api/fleet/pin")
+async def fleet_pins_add(req: Request):
+    """Pin a detected serv-UI host (persisted in fleet_pins.json)."""
+    data = await req.json()
+    fqdn = (data.get("fqdn") or "").strip().rstrip(".").lower()
+    ips = [str(i) for i in (data.get("ips") or [])]
+    key = _fleet_pin_key(fqdn, ips)
+    if not key or (not fqdn and not any(_TS_IP_RE.match(i) for i in ips)):
+        raise HTTPException(status_code=400, detail="fqdn or tailscale IP is required")
+
+    hostname = (data.get("hostname") or "").strip() or key.split(".")[0]
+    pins = _load_fleet_pins()
+    if any(p["key"] == key for p in pins):
+        return {"success": True, "message": "既にピン留めされています"}
+    pins.append({"key": key, "fqdn": fqdn, "hostname": hostname,
+                 "ips": [i for i in ips if _TS_IP_RE.match(i)]})
+    _save_fleet_pins(pins)
+    return {"success": True, "message": f"{hostname} をピン留めしました"}
+
+
+@app.post("/api/fleet/unpin")
+async def fleet_pins_remove(req: Request):
+    """Unpin a serv-UI host."""
+    data = await req.json()
+    key = (data.get("key") or "").strip().rstrip(".").lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    pins = _load_fleet_pins()
+    remaining = [p for p in pins if p["key"] != key]
+    if len(remaining) == len(pins):
+        return {"success": True, "message": "ピン留めされていません"}
+    _save_fleet_pins(remaining)
+    return {"success": True, "message": "ピン留めを解除しました"}
 
 
 # ============================================================

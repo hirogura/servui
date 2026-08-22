@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>serv-UI</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=5">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
@@ -62,6 +62,10 @@
       <li data-tab="backup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M23 3H1v5h22z"/><path d="M10 12h4"/></svg>
         <span>バックアップ/復元</span>
+      </li>
+      <li data-tab="fleet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>serv-UI一括管理</span>
       </li>
     </ul>
     <div class="sidebar-footer">
@@ -561,8 +565,31 @@
         </button>
       </div>
     </section>
+
+    <!-- serv-UI Fleet (Bulk Management) -->
+    <section id="tab-fleet" class="tab-content">
+      <h1>serv-UI一括管理ページ</h1>
+      <div id="fleet-status-msg" class="status-msg"></div>
+
+      <h2>ピン留め</h2>
+      <div id="fleet-pinned-container">
+        <p class="muted">ピン留めされたserv-UIはありません。下の「serv-UI自動検出」で検出したサーバーをピン留めすると、ここに固定表示されます。</p>
+      </div>
+
+      <h2>serv-UI自動検出</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">Tailnet内で稼働中のserv-UIを検出し、一覧表示します。ホスト名をクリックすると、そのserv-UIを新しいタブで開きます。</p>
+        <button class="btn btn-primary" id="btn-fleet-detect" onclick="detectFleet()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          serv-UI自動検出
+        </button>
+      </div>
+      <div id="fleet-detect-container">
+        <p class="muted">「serv-UI自動検出」ボタンをクリックしてTailnet内のserv-UIを検索してください。</p>
+      </div>
+    </section>
   </main>
 
-  <script src="/static/app.js?v=10"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>
