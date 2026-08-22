@@ -36,6 +36,8 @@ function switchTab(tab) {
     loadDisks();
   } else if (tab === 'grub') {
     loadGrub();
+  } else if (tab === 'backup') {
+    loadBackupPage();
   }
 }
 
@@ -2024,6 +2026,193 @@ async function openVMManager() {
   } catch (e) {
     showStatus(`VM Manager確認エラー: ${e.message}`, 'error');
   }
+}
+
+// --- Backup / Restore ---
+let backupStatusData = null;
+
+async function loadBackupPage() {
+  loadBackupStatus();
+  loadBackupPartitions();
+}
+
+function setBackupControlsEnabled(enabled) {
+  ['backup-dest-select', 'btn-backup-run', 'restore-src-select', 'btn-restore-scan', 'restore-img-select', 'btn-restore-run'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enabled;
+  });
+}
+
+async function loadBackupStatus() {
+  const envEl = document.getElementById('backup-env-status');
+  const installBtn = document.getElementById('btn-backup-install');
+  try {
+    const resp = await fetch('/api/backup/status');
+    backupStatusData = await resp.json();
+    const installed = backupStatusData.installed;
+    const isoMounted = backupStatusData.iso_mounted;
+
+    envEl.innerHTML =
+      `<div>Clonezilla: ${installed
+        ? '<span class="text-success">インストール済み</span>'
+        : '<span class="text-danger">未インストール</span>'}</div>` +
+      `<div>保存用パーティション (/iso): ${isoMounted
+        ? `<span class="text-success">マウント済み</span> (${escapeHtml(backupStatusData.iso_source || '?')}${backupStatusData.iso_fstype ? ', ' + escapeHtml(backupStatusData.iso_fstype) : ''}${backupStatusData.iso_size ? ', ' + escapeHtml(backupStatusData.iso_size) : ''})`
+        : '<span class="text-warn">未マウント</span>'}</div>` +
+      (installed && isoMounted ? '' :
+        `<div class="text-warn" style="margin-top:0.3rem;">${!installed
+          ? '先に「Clonezillaをインストール」を実行してください。'
+          : '/iso に保存用パーティションをマウントしてください。'}</div>`);
+
+    installBtn.disabled = installed;
+    installBtn.textContent = installed ? 'Clonezillaをインストール済み' : 'Clonezillaをインストール';
+    setBackupControlsEnabled(installed);
+  } catch (e) {
+    envEl.innerHTML = `<span class="text-danger">状態の取得に失敗しました: ${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function loadBackupPartitions() {
+  const destSel = document.getElementById('backup-dest-select');
+  const srcSel = document.getElementById('restore-src-select');
+  try {
+    const resp = await fetch('/api/backup/partitions');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const options = data.partitions.map(p => {
+      const label = [p.device, p.size, p.fstype || '(fs不明)', p.mountpoint ? `mount=${p.mountpoint}` : null]
+        .filter(Boolean).join(' / ');
+      return `<option value="${escapeHtml(p.device)}">${escapeHtml(label)}</option>`;
+    }).join('');
+    destSel.innerHTML = options || '<option value="">パーティションがありません</option>';
+    srcSel.innerHTML = options || '<option value="">パーティションがありません</option>';
+  } catch (e) {
+    destSel.innerHTML = '<option value="">パーティション一覧の取得に失敗しました</option>';
+    srcSel.innerHTML = '<option value="">パーティション一覧の取得に失敗しました</option>';
+    showBackupStatus(`パーティション一覧の取得エラー: ${e.message}`, 'error');
+  }
+}
+
+function showBackupStatus(msg, type) {
+  const el = document.getElementById('backup-status-msg');
+  el.textContent = msg;
+  el.className = `status-msg show ${type}`;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = 'status-msg'; }, 6000);
+}
+
+async function sendToTerminal(cmd, infoMsg) {
+  switchTab('terminal');
+  showStatus(infoMsg, 'info');
+  setTimeout(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: cmd + '\n' }));
+    } else {
+      showStatus('ターミナルに接続できません', 'error');
+    }
+  }, 500);
+}
+
+async function installClonezilla() {
+  const btn = document.getElementById('btn-backup-install');
+  if (!confirm('Clonezillaのインストールを開始しますか？\n\nGitHubからcloneautoを取得してインストールします。\n・完了まで数分かかる場合があります\n・ターミナルで進捗を確認できます')) return;
+  btn.disabled = true;
+  const installCmd = 'cd ~ && wget https://github.com/hirogura/cloneauto/archive/refs/heads/main.tar.gz && tar xzf main.tar.gz && cd cloneauto-main && sudo ./install-clonezilla.sh';
+  await sendToTerminal(installCmd, 'Clonezillaをインストール中... ターミナルで進捗を確認できます。');
+  showBackupStatus('Clonezillaをインストール中... 完成後、このページを再表示すると状態が更新されます。', 'info');
+}
+
+async function runBackup() {
+  const device = document.getElementById('backup-dest-select').value;
+  if (!device) {
+    showBackupStatus('保存先パーティションを選択してください', 'error');
+    return;
+  }
+  let cmdData;
+  try {
+    const resp = await fetch('/api/backup/cmd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'backup', device }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    cmdData = await resp.json();
+  } catch (e) {
+    showBackupStatus(`バックアップ準備エラー: ${e.message}`, 'error');
+    return;
+  }
+  if (!confirm(`バックアップを開始しますか？\n\n保存先パーティション: ${device}\n\n・実行すると自動的に再起動し、Clonezilla Live がバックアップを行います\n・バックアップ完了後、自動的に再起動します`)) return;
+  showBackupStatus(`${cmdData.message} でバックアップを開始します...`, 'info');
+  await sendToTerminal(cmdData.cmd, `${cmdData.message} でバックアップを開始します（自動的に再起動します）`);
+}
+
+async function loadRestoreImages() {
+  const srcSel = document.getElementById('restore-src-select');
+  const imgSel = document.getElementById('restore-img-select');
+  const device = srcSel.value;
+  if (!device) {
+    showBackupStatus('パーティションを選択してください', 'error');
+    return;
+  }
+  const scanBtn = document.getElementById('btn-restore-scan');
+  scanBtn.disabled = true;
+  imgSel.innerHTML = '<option value="">検索中...</option>';
+  try {
+    const resp = await fetch('/api/backup/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    if (data.images.length === 0) {
+      imgSel.innerHTML = `<option value="">バックアップイメージが見つかりません (${escapeHtml(data.prefix)}-*)</option>`;
+      showBackupStatus(`${device} にバックアップイメージが見つかりませんでした`, 'error');
+      return;
+    }
+    imgSel.innerHTML = data.images.map(img =>
+      `<option value="${escapeHtml(img)}">${escapeHtml(img)}</option>`).join('');
+    showBackupStatus(`${data.images.length} 件のバックアップイメージが見つかりました`, 'success');
+  } catch (e) {
+    imgSel.innerHTML = '<option value="">イメージ一覧の取得に失敗しました</option>';
+    showBackupStatus(`イメージ一覧の取得エラー: ${e.message}`, 'error');
+  } finally {
+    scanBtn.disabled = false;
+  }
+}
+
+async function runRestore() {
+  const device = document.getElementById('restore-src-select').value;
+  const image = document.getElementById('restore-img-select').value;
+  if (!device || !image) {
+    showBackupStatus('パーティションとイメージを選択してください', 'error');
+    return;
+  }
+  let cmdData;
+  try {
+    const resp = await fetch('/api/backup/cmd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'restore', device, image }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    cmdData = await resp.json();
+  } catch (e) {
+    showBackupStatus(`復元準備エラー: ${e.message}`, 'error');
+    return;
+  }
+  if (!confirm(`復元を開始しますか？\n\n復元元パーティション: ${device}\nバックアップイメージ: ${image}\n\n⚠️ 現在のシステムは選択したバックアップの内容で上書きされます\n⚠️ 実行すると自動的に再起動し、Clonezilla Live が復元を行います\n⚠️ 処理中に電源を切らないでください`)) return;
+  showBackupStatus(`${cmdData.message} で復元を開始します...`, 'info');
+  await sendToTerminal(cmdData.cmd, `${cmdData.message} で復元を開始します（自動的に再起動します）`);
 }
 
 // --- Init ---

@@ -1752,6 +1752,183 @@ async def vmmanager_status():
     return {"installed": installed, "url": url}
 
 
+# ============================================================
+# 7.5 Backup / Restore (Clonezilla / cloneauto)
+# ============================================================
+CLONE_BACKUP_CMD = "/usr/local/sbin/clonezilla-backup"
+CLONE_RESTORE_CMD = "/usr/local/sbin/clonezilla-restore"
+
+
+def _validate_block_device(device: str) -> str:
+    """Validate a device path like /dev/sda1. Returns the path or raises."""
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._-]+", device or ""):
+        raise HTTPException(status_code=400, detail="invalid device")
+    return device
+
+
+def _parse_lsblk_partitions(stdout: str) -> list[dict]:
+    """Parse `lsblk -P` output into partition dicts.
+
+    Applies the same filter as the clonezilla helpers (TYPE="part",
+    excluding swap) so that menu indexes match between serv-UI and
+    clonezilla-backup / clonezilla-restore.
+    """
+    parts = []
+    for line in stdout.splitlines():
+        if 'TYPE="part"' not in line or 'FSTYPE="swap"' in line:
+            continue
+        fields = dict(re.findall(r'([A-Z]+)="((?:[^"\\]|\\.)*)"', line))
+        parts.append({
+            "device": f"/dev/{fields.get('NAME', '')}",
+            "size": fields.get("SIZE", ""),
+            "fstype": fields.get("FSTYPE") or None,
+            "mountpoint": fields.get("MOUNTPOINT") or None,
+        })
+    return parts
+
+
+async def _list_clonezilla_partitions() -> list[dict]:
+    r = await run_cmd("lsblk -P -o NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE", timeout=15)
+    if r["returncode"] != 0:
+        raise HTTPException(status_code=500, detail=r["stderr"] or "lsblk failed")
+    return _parse_lsblk_partitions(r["stdout"])
+
+
+def _clonezilla_image_prefix() -> str:
+    """Read IMAGE_PREFIX from the installed clonezilla-restore (default: ubuntu)."""
+    try:
+        with open(CLONE_RESTORE_CMD, encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+        m = re.search(r'^for d in "\\?\$SRC_MNT"/([A-Za-z0-9._-]+)-\*; do', txt, re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return "ubuntu"
+
+
+async def _list_clonezilla_images(device: str) -> list[str]:
+    """List Clonezilla image directories on the given partition.
+
+    Mirrors the image listing of clonezilla-restore (glob `<prefix>-*`,
+    directories only) so indexes match.
+    Temporarily mounts the partition read-only when it is not mounted.
+    """
+    check = await run_cmd(f"test -b {device}", timeout=5)
+    if check["returncode"] != 0:
+        raise HTTPException(status_code=400, detail=f"{device} is not a block device")
+
+    prefix = _clonezilla_image_prefix()
+
+    mnt_r = await run_cmd(f"findmnt -n -o TARGET --source {device} | head -1", timeout=5)
+    src_mnt = mnt_r["stdout"].strip()
+    tmp_dir = None
+    if not src_mnt:
+        mk = await run_cmd("mktemp -d", timeout=5)
+        tmp_dir = mk["stdout"].strip()
+        m = await run_cmd(f"{_sudo('mount')} -o ro {device} {tmp_dir}", timeout=30)
+        if m["returncode"] != 0:
+            await run_cmd(f"rmdir {tmp_dir}", timeout=5)
+            raise HTTPException(
+                status_code=500,
+                detail=f"{device} をマウントできませんでした: {m['stderr'].strip()}",
+            )
+        src_mnt = tmp_dir
+    try:
+        ls = await run_cmd(
+            f"find {src_mnt} -maxdepth 1 -type d -name '{prefix}-*' -printf '%f\\n' | LC_ALL=C sort",
+            timeout=15,
+        )
+        return [line.strip() for line in ls["stdout"].splitlines() if line.strip()]
+    finally:
+        if tmp_dir:
+            await run_cmd(f"{_sudo('umount')} {tmp_dir}; rmdir {tmp_dir}", timeout=15)
+
+
+@app.get("/api/backup/status")
+async def backup_status():
+    """Check Clonezilla helper installation and /iso mount status."""
+    b = await run_cmd(f"test -x {CLONE_BACKUP_CMD}", timeout=5)
+    r = await run_cmd(f"test -x {CLONE_RESTORE_CMD}", timeout=5)
+    installed = b["returncode"] == 0 and r["returncode"] == 0
+
+    mnt = await run_cmd("findmnt -n -o SOURCE,FSTYPE,SIZE --target /iso", timeout=5)
+    fields = mnt["stdout"].split()
+    return {
+        "installed": installed,
+        "iso_mounted": mnt["returncode"] == 0,
+        "iso_source": fields[0] if len(fields) > 0 else None,
+        "iso_fstype": fields[1] if len(fields) > 1 else None,
+        "iso_size": fields[2] if len(fields) > 2 else None,
+    }
+
+
+@app.get("/api/backup/partitions")
+async def backup_partitions():
+    """List partitions selectable as backup destination / restore source."""
+    partitions = await _list_clonezilla_partitions()
+    return {"partitions": partitions}
+
+
+@app.post("/api/backup/images")
+async def backup_images(req: Request):
+    """List Clonezilla backup images stored on the given partition."""
+    data = await req.json()
+    device = _validate_block_device(data.get("device", "").strip())
+    images = await _list_clonezilla_images(device)
+    return {"images": images, "prefix": _clonezilla_image_prefix()}
+
+
+@app.post("/api/backup/cmd")
+async def backup_cmd(req: Request):
+    """Build the terminal command for clonezilla-backup / clonezilla-restore.
+
+    The helpers prompt for partition/image selection on stdin, so we compute
+    the menu indexes here (with the exact same listing logic) and pipe the
+    answers into the command.
+    """
+    data = await req.json()
+    mode = data.get("mode", "").strip()
+    device = _validate_block_device(data.get("device", "").strip())
+    image = (data.get("image") or "").strip()
+
+    partitions = await _list_clonezilla_partitions()
+    index = next((i for i, p in enumerate(partitions) if p["device"] == device), None)
+    if index is None:
+        raise HTTPException(status_code=404, detail=f"{device} がパーティション一覧に見つかりません")
+
+    if mode == "backup":
+        cmd = f"printf '{index + 1}\\n' | sudo {CLONE_BACKUP_CMD}"
+        message = f"保存先: {device}"
+        return {"success": True, "cmd": cmd, "message": message}
+
+    if mode == "restore":
+        if not image:
+            raise HTTPException(status_code=400, detail="image is required")
+
+        prefix = _clonezilla_image_prefix()
+        # Validate image name to prevent shell injection
+        if not re.fullmatch(rf"{re.escape(prefix)}-[A-Za-z0-9._-]+", image):
+            raise HTTPException(status_code=400, detail="invalid image name")
+
+        images = await _list_clonezilla_images(device)
+
+        img_index = next((i for i, img in enumerate(images) if img == image), None)
+        if img_index is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"イメージ {image} が {device} 上に見つかりません",
+            )
+
+        cmd = (
+            f"printf '{index + 1}\\n{img_index + 1}\\nyes\\n' "
+            f"| sudo {CLONE_RESTORE_CMD}"
+        )
+        return {"success": True, "cmd": cmd, "message": f"復元元: {device} / イメージ: {image}"}
+
+    raise HTTPException(status_code=400, detail="mode must be 'backup' or 'restore'")
+
+
 @app.post("/api/servui/restart")
 async def restart_servui():
     """Restart serv-UI service."""

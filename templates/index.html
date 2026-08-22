@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>serv-UI</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=4">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
@@ -58,6 +58,10 @@
       <li data-tab="vmmanager" onclick="openVMManager()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
         <span>VM Manager</span>
+      </li>
+      <li data-tab="backup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M23 3H1v5h22z"/><path d="M10 12h4"/></svg>
+        <span>バックアップ/復元</span>
       </li>
     </ul>
     <div class="sidebar-footer">
@@ -493,8 +497,72 @@
       <h2>EFIブートエントリー（参考）</h2>
       <div id="grub-efi-container"><p class="muted">--</p></div>
     </section>
+
+    <!-- Backup / Restore -->
+    <section id="tab-backup" class="tab-content">
+      <h1>バックアップ/復元</h1>
+      <div id="backup-status-msg" class="status-msg"></div>
+
+      <h2>この機能について</h2>
+      <div class="stat-card">
+        <ul class="backup-notes">
+          <li><strong>パーティションのみ対応</strong>です（LVM は非対応）。</li>
+          <li><strong>保存用パーティション</strong>を用意し、<strong>/iso</strong> にマウントしておく必要があります。</li>
+          <li>バックアップ/復元を実行すると自動的に再起動し、Clonezilla Live が処理を行います（完了後も自動で再起動します）。</li>
+        </ul>
+        <div id="backup-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>
+      </div>
+
+      <h2>セットアップ</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">
+          GitHubからcloneautoを取得してインストールします。Clonezilla Live本体、自動バックアップ/復元コマンド
+          （sudo clonezilla-backup / sudo clonezilla-restore）、GRUBメニューが登録されます。
+        </p>
+        <button class="btn btn-primary" id="btn-backup-install" onclick="installClonezilla()" disabled>
+          Clonezillaをインストール
+        </button>
+      </div>
+
+      <h2>バックアップ</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">現在のシステムを保存先パーティションにバックアップします。</p>
+        <div class="form-group">
+          <label for="backup-dest-select">保存先パーティション</label>
+          <select id="backup-dest-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">読み込み中...</option>
+          </select>
+        </div>
+        <button class="btn btn-success" id="btn-backup-run" onclick="runBackup()" disabled>
+          バックアップ開始
+        </button>
+      </div>
+
+      <h2>復元</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">選択したバックアップイメージでシステムを復元します。<span class="text-warn">⚠ 現在のシステムは上書きされます。</span></p>
+        <div class="form-group">
+          <label for="restore-src-select">バックアップイメージがあるパーティション</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="restore-src-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-secondary" id="btn-restore-scan" onclick="loadRestoreImages()" disabled>イメージ検索</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="restore-img-select">復元するバックアップイメージ</label>
+          <select id="restore-img-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">パーティションを選択して「イメージ検索」を押してください</option>
+          </select>
+        </div>
+        <button class="btn btn-danger" id="btn-restore-run" onclick="runRestore()" disabled>
+          復元開始
+        </button>
+      </div>
+    </section>
   </main>
 
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>
