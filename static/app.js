@@ -1695,6 +1695,7 @@ async function loadGrub() {
     statusMsg.textContent = `GRUB情報取得エラー: ${e.message}`;
   }
   loadGrubPartitions();
+  syncIsoDownloadStatus();
 }
 
 function renderGrubInfo(data) {
@@ -1974,6 +1975,63 @@ async function cleanupGrubBackups() {
   }
 }
 
+let isoDlPollTimer = null;
+
+function stopIsoDlPolling() {
+  if (isoDlPollTimer) {
+    clearInterval(isoDlPollTimer);
+    isoDlPollTimer = null;
+  }
+}
+
+async function pollIsoDownloadStatus() {
+  const statusEl = document.getElementById('grub-iso-dl-status');
+  const progress = document.getElementById('grub-iso-dl-progress');
+  const bar = document.getElementById('grub-iso-dl-progress-bar');
+  const text = document.getElementById('grub-iso-dl-progress-text');
+  const btn = document.getElementById('btn-grub-iso-dl');
+  const cancelBtn = document.getElementById('btn-grub-iso-dl-cancel');
+  let s;
+  try {
+    const resp = await fetch('/api/grub/iso-download/status');
+    s = await resp.json();
+  } catch (e) {
+    return;
+  }
+  if (s.running) {
+    btn.disabled = true;
+    cancelBtn.disabled = false;
+    progress.style.display = 'block';
+    if (s.total > 0) {
+      const pct = Math.min(100, Math.round((s.size / s.total) * 100));
+      bar.style.width = pct + '%';
+      text.textContent = `${s.filename} — ${formatBytesJS(s.size)} / ${formatBytesJS(s.total)} (${pct}%)`;
+    } else {
+      bar.style.width = '0%';
+      text.textContent = `${s.filename} — ${formatBytesJS(s.size)}`;
+    }
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> /iso にダウンロード中...';
+    return;
+  }
+  stopIsoDlPolling();
+  progress.style.display = 'none';
+  cancelBtn.disabled = true;
+  if (s.success === true || s.success === false) {
+    btn.disabled = false;
+    if (s.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = `${s.filename} を /iso に保存しました（${formatBytesJS(s.size)}）`;
+    } else if (s.cancelled) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = 'ダウンロードをキャンセルしました';
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `ダウンロード失敗: ${s.log || '不明なエラー'}`;
+    }
+  }
+}
+
 async function downloadIsoFromWeb() {
   const input = document.getElementById('grub-iso-dl-url');
   const statusEl = document.getElementById('grub-iso-dl-status');
@@ -1986,7 +2044,7 @@ async function downloadIsoFromWeb() {
   }
   btn.disabled = true;
   statusEl.className = 'status-msg show info';
-  statusEl.innerHTML = '<span class="spinner"></span> /iso にダウンロード中... (ISOのサイズによっては数分〜数十分かかる場合があります)';
+  statusEl.innerHTML = '<span class="spinner"></span> ダウンロードを開始しています...';
   try {
     const resp = await fetch('/api/grub/iso-download', {
       method: 'POST',
@@ -1994,14 +2052,43 @@ async function downloadIsoFromWeb() {
       body: JSON.stringify({ url }),
     });
     const data = await resp.json();
-    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
-    statusEl.textContent = data.message;
-    if (data.success) input.value = '';
+    if (!data.success) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+      btn.disabled = false;
+      return;
+    }
+    input.value = '';
+    stopIsoDlPolling();
+    pollIsoDownloadStatus();
+    isoDlPollTimer = setInterval(pollIsoDownloadStatus, 1000);
   } catch (e) {
     statusEl.className = 'status-msg show error';
     statusEl.textContent = `エラー: ${e.message}`;
+    btn.disabled = false;
   }
-  btn.disabled = false;
+}
+
+async function cancelIsoDownload() {
+  if (!confirm('ダウンロードをキャンセルしますか？\n保存中の部分ファイルは削除されます。')) return;
+  document.getElementById('btn-grub-iso-dl-cancel').disabled = true;
+  try {
+    await fetch('/api/grub/iso-download/cancel', { method: 'POST' });
+  } catch (e) {}
+  pollIsoDownloadStatus();
+}
+
+function syncIsoDownloadStatus() {
+  fetch('/api/grub/iso-download/status')
+    .then(r => r.json())
+    .then(s => {
+      if (s.running && !isoDlPollTimer) {
+        stopIsoDlPolling();
+        pollIsoDownloadStatus();
+        isoDlPollTimer = setInterval(pollIsoDownloadStatus, 1000);
+      }
+    })
+    .catch(() => {});
 }
 
 // --- Helpers ---

@@ -516,12 +516,23 @@
           <label for="grub-iso-dl-url">ISOイメージのURL</label>
           <input type="text" id="grub-iso-dl-url" placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04.3-live-server-amd64.iso" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
         </div>
+        <div id="grub-iso-dl-progress" style="display:none;margin-bottom:0.75rem;">
+          <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);height:12px;overflow:hidden;">
+            <div id="grub-iso-dl-progress-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.3s;"></div>
+          </div>
+          <div id="grub-iso-dl-progress-text" style="font-size:0.72rem;color:var(--text-muted);margin-top:0.3rem;"></div>
+        </div>
         <div id="grub-iso-dl-status" class="status-msg"></div>
-        <div style="display:flex;justify-content:flex-end;">
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;">
+          <a class="btn btn-secondary" href="https://releases.ubuntu.com/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Ubuntuリリースページ確認
+          </a>
           <button class="btn btn-primary" id="btn-grub-iso-dl" onclick="downloadIsoFromWeb()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Webからダウンロード
           </button>
+          <button class="btn btn-secondary" id="btn-grub-iso-dl-cancel" onclick="cancelIsoDownload()" disabled>キャンセル</button>
         </div>
       </div>
 

@@ -2757,9 +2757,64 @@ async def grub_next_boot_menu():
     return {"success": True, "message": msg}
 
 
+_iso_dl_state: dict = {
+    "running": False, "success": None, "cancelled": False,
+    "log": "", "filename": "", "path": "", "total": None,
+}
+_iso_dl_lock = asyncio.Lock()
+_iso_dl_proc: asyncio.subprocess.Process | None = None
+
+
+def _reset_iso_dl_state(**kw) -> None:
+    _iso_dl_state.clear()
+    _iso_dl_state.update({
+        "running": False, "success": None, "cancelled": False,
+        "log": "", "filename": "", "path": "", "total": None,
+    }, **kw)
+
+
+def _probe_content_length(url: str) -> int | None:
+    """Best-effort Content-Length lookup for progress display (None if unknown)."""
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "servui"})
+        with urllib.request.urlopen(req, timeout=5, context=_SSL_UNVERIFIED) as resp:
+            cl = resp.headers.get("Content-Length")
+            return int(cl) if cl else None
+    except Exception:
+        return None
+
+
+async def _iso_download_worker(proc: asyncio.subprocess.Process, dest: str) -> None:
+    global _iso_dl_proc
+    try:
+        _, stderr = await proc.communicate()
+        rc = proc.returncode
+        async with _iso_dl_lock:
+            if rc == 0:
+                _iso_dl_state["success"] = True
+                _iso_dl_state["log"] = ""
+            else:
+                _iso_dl_state["success"] = False
+                if _iso_dl_state["cancelled"]:
+                    _iso_dl_state["log"] = "キャンセルしました"
+                else:
+                    err_lines = [l for l in stderr.decode("utf-8", errors="replace").splitlines() if l.strip()]
+                    _iso_dl_state["log"] = err_lines[-1] if err_lines else f"wget exit code {rc}"
+                await run_cmd(_sudo(f"rm -f {shlex.quote(dest)}"))
+            _iso_dl_state["running"] = False
+    except Exception as e:
+        async with _iso_dl_lock:
+            _iso_dl_state["success"] = False
+            _iso_dl_state["log"] = str(e)
+            _iso_dl_state["running"] = False
+    finally:
+        _iso_dl_proc = None
+
+
 @app.post("/api/grub/iso-download")
 async def grub_iso_download(req: Request):
-    """Download an ISO image from a direct URL into /iso using wget."""
+    """Start downloading an ISO image from a direct URL into /iso using wget (background)."""
+    global _iso_dl_proc
     data = await req.json()
     url = (data.get("url") or "").strip()
     if not url:
@@ -2784,19 +2839,58 @@ async def grub_iso_download(req: Request):
         return {"success": False, "message": "/iso に保存用パーティションがマウントされていません"}
 
     dest = f"/iso/{fname}"
-    res = await run_cmd(
-        _sudo(f"wget -q --tries=3 --timeout=60 -O {shlex.quote(dest)} {shlex.quote(url)}"),
-        timeout=7200,
-    )
-    if res["returncode"] != 0:
-        await run_cmd(_sudo(f"rm -f {shlex.quote(dest)}"))
-        err_lines = [l for l in res["stderr"].splitlines() if l.strip()]
-        err = err_lines[-1] if err_lines else f"wget exit code {res['returncode']}"
-        return {"success": False, "message": f"ダウンロードに失敗しました: {err}"}
+    if os.path.exists(dest):
+        return {"success": False, "message": f"同名のファイルが既に存在します: {fname}"}
 
-    sz = await run_cmd(f"du -sh {shlex.quote(dest)} 2>/dev/null | cut -f1")
-    size = sz["stdout"].strip() or "?"
-    return {"success": True, "message": f"{dest} に保存しました（{size}）"}
+    total = await asyncio.to_thread(_probe_content_length, url)
+
+    async with _iso_dl_lock:
+        if _iso_dl_state["running"]:
+            return {"success": False, "message": "ダウンロードが既に実行中です"}
+        proc = await asyncio.create_subprocess_shell(
+            _sudo(f"wget -q --tries=3 --timeout=60 -O {shlex.quote(dest)} {shlex.quote(url)}"),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        _iso_dl_proc = proc
+        _reset_iso_dl_state(running=True, filename=fname, path=dest, total=total)
+        asyncio.create_task(_iso_download_worker(proc, dest))
+    return {"success": True, "filename": fname}
+
+
+@app.get("/api/grub/iso-download/status")
+async def grub_iso_download_status():
+    """Current state of the background ISO download."""
+    st = dict(_iso_dl_state)
+    size = 0
+    try:
+        if st["path"] and os.path.isfile(st["path"]):
+            size = os.path.getsize(st["path"])
+    except OSError:
+        size = 0
+    st["size"] = size
+    st.pop("path", None)
+    return st
+
+
+@app.post("/api/grub/iso-download/cancel")
+async def grub_iso_download_cancel():
+    """Abort the running ISO download (kills the wget process group)."""
+    async with _iso_dl_lock:
+        if not _iso_dl_state["running"]:
+            return {"success": False, "message": "実行中のダウンロードはありません"}
+        _iso_dl_state["cancelled"] = True
+        proc = _iso_dl_proc
+    if proc is not None and proc.returncode is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    return {"success": True, "message": "ダウンロードをキャンセルしています..."}
 
 
 # ============================================================
