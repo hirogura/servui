@@ -2,7 +2,11 @@
 # ============================================================
 # serv-UI Setup Script for Ubuntu Server
 # ============================================================
-# Usage: sudo bash setup.sh
+# Usage: sudo bash setup.sh [--branch <name>] [--no-restart]
+#
+# Options:
+#   --branch <name>   Install from the given branch (default: main)
+#   --no-restart      Deploy files only; restart serv-UI manually
 #
 # This script:
 # 1. Installs system dependencies
@@ -26,22 +30,38 @@ APP_DIR="/opt/servui"
 APP_USER="servui"
 APP_PORT=3355
 REPO_URL="https://github.com/hirogura/servui.git"
+BRANCH="main"
+NO_RESTART=0
 
 log() { echo -e "${GREEN}[✔]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err() { echo -e "${RED}[✘]${NC} $1"; exit 1; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 
+# --- Parse arguments ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --branch)
+      [[ $# -ge 2 ]] || err "--branch requires a value"
+      BRANCH="$2"
+      shift 2
+      ;;
+    --no-restart)
+      NO_RESTART=1
+      shift
+      ;;
+    *)
+      err "Unknown option: $1"
+      ;;
+  esac
+done
+
 # --- Root check ---
 if [[ $EUID -ne 0 ]]; then
   err "This script must be run as root (sudo bash setup.sh)"
 fi
 
-# --- Optional flag: --no-restart (deploy files only; restart manually) ---
-NO_RESTART=0
-if [[ "${1:-}" == "--no-restart" ]]; then
-  NO_RESTART=1
-fi
+info "Installing serv-UI from branch: ${BRANCH}"
 
 # --- Check Tailscale is installed ---
 if ! command -v tailscale &>/dev/null; then
@@ -149,10 +169,10 @@ if [[ -d "$APP_DIR/.git" ]]; then
     git config --global --add safe.directory "$APP_DIR"
   fi
   # Discard any local modifications and take the GitHub version
-  git fetch origin main
+  git fetch origin "$BRANCH"
   git reset --hard FETCH_HEAD
 else
-  git clone --depth 1 "$REPO_URL" "$TEMP_DIR"
+  git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$TEMP_DIR"
   mkdir -p "$APP_DIR"
   cp -r "$TEMP_DIR/"* "$APP_DIR/"
 fi
