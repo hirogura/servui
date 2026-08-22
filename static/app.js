@@ -1956,7 +1956,8 @@ async function openSelfcode() {
       switchTab('terminal');
       showStatus('selfcodeはインストール済みです。URLを取得できませんでした。', 'info');
     } else {
-      // Not installed - send install commands via WebSocket terminal
+      // Not installed - confirm before installing
+      if (!confirm('selfcodeはまだインストールされていません。\nインストールしますか？')) return;
       switchTab('terminal');
       showStatus('selfcodeをインストール中... ターミナルで進捗を確認できます。', 'info');
       setTimeout(() => {
@@ -1982,6 +1983,7 @@ async function openEasyLXD() {
     if (data.installed && data.url) {
       window.open(data.url, '_blank');
     } else {
+      if (!confirm('Easy LXDはまだインストールされていません。\nインストールしますか？')) return;
       switchTab('terminal');
       showStatus('Easy LXDをインストール中...', 'info');
       setTimeout(() => {
@@ -2007,6 +2009,7 @@ async function openVMManager() {
     if (data.installed && data.url) {
       window.open(data.url, '_blank');
     } else {
+      if (!confirm('VM Managerはまだインストールされていません。\nインストールしますか？')) return;
       switchTab('terminal');
       showStatus('VM Managerをインストール中...', 'info');
       setTimeout(() => {
