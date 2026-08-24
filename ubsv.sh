@@ -16,7 +16,18 @@ ask_yn() {
 }
 
 sudo apt update
-sudo apt upgrade -y
+
+# console-setup / keyboard-configuration のdebconf質問を事前回答で回避
+sudo debconf-set-selections <<'EOF'
+console-setup console-setup/codeset47 select Guess optimal character set
+console-setup console-setup/fontface47 select Fixed
+console-setup console-setup/fontsize select 16
+keyboard-configuration keyboard-configuration/layout select Japanese
+keyboard-configuration keyboard-configuration/layoutcode string jp
+keyboard-configuration keyboard-configuration/variant select Japanese
+EOF
+
+sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y
 sudo apt install -y curl
 curl -fsSL https://tailscale.com/install.sh | sh
 
