@@ -2173,7 +2173,7 @@ async def timeshift_create(req: Request):
 
     script_body = (
         "#!/usr/bin/env python3\n"
-        "import json, os\n"
+        "import json, os, subprocess, re, glob\n"
         "c = '/etc/timeshift/timeshift.json'\n"
         "d = {}\n"
         "if os.path.isfile(c):\n"
@@ -2192,6 +2192,17 @@ async def timeshift_create(req: Request):
         "d.setdefault('count_hourly', '6')\n"
         "d.setdefault('count_boot', '5')\n"
         "d.setdefault('exclude-apps', [])\n"
+        "if 'backup_device_uuid' not in d:\n"
+        "    try:\n"
+        "        root = subprocess.check_output('findmnt -n -o SOURCE /', shell=True, text=True).strip()\n"
+        "        disk = re.sub(r'p?\\d+$', '', root)\n"
+        "        for p in glob.glob(disk + '*'):\n"
+        "            if p == root or not os.path.exists(p): continue\n"
+        "            ft = subprocess.check_output(f'lsblk -lnpo FSTYPE {{p}}', shell=True, text=True).strip()\n"
+        "            if ft in ('vfat', ''): continue\n"
+        "            u = subprocess.check_output(f'blkid -s UUID -o value {{p}}', shell=True, text=True).strip()\n"
+        "            if u: d['backup_device_uuid'] = u; break\n"
+        "    except Exception: pass\n"
         "with open(c, 'w') as _f: json.dump(d, _f, indent=2)\n"
     )
 
@@ -2203,15 +2214,8 @@ async def timeshift_create(req: Request):
     except OSError as e:
         return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
 
-    # Detect the root device so Timeshift doesn't prompt interactively.
-    root_dev = ""
-    r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
-    if r["returncode"] == 0 and r["stdout"].strip():
-        root_dev = r["stdout"].strip()
-    target_arg = f" --target '{root_dev}'" if root_dev else ""
-
     # Execute the helper + timeshift --create in a detached background process.
-    cmd = f"sudo python3 {ts_script} && sudo timeshift --create{target_arg} --yes{comment_arg}"
+    cmd = f"sudo python3 {ts_script} && sudo timeshift --create --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
