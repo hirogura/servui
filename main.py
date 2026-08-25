@@ -2083,7 +2083,17 @@ async def timeshift_snapshots():
                 "tags": m.group(3).strip(),
                 "description": m.group(4).strip(),
             })
-    return {"snapshots": snapshots}
+
+    # Read the currently configured exclude list from the Timeshift config.
+    excludes: list[str] = []
+    try:
+        with open("/etc/timeshift/timeshift.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        excludes = cfg.get("exclude", [])
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return {"snapshots": snapshots, "excludes": excludes}
 
 
 @app.post("/api/timeshift/create")
@@ -2130,18 +2140,21 @@ async def timeshift_create(req: Request):
         "json.dump(d, open(c, 'w'), indent=2)\n"
     )
 
-    # Build a full shell script that updates the config then runs timeshift.
-    full_script = (
-        "#!/bin/bash\nset -e\n"
-        "cat > /tmp/ts_update.py << 'TSEOF'\n"
-        f"{script_body}"
-        "TSEOF\n"
-        f"sudo python3 /tmp/ts_update.py\n"
-        f"sudo timeshift --create --yes{comment_arg}\n"
+    # Step 1: Write the Python helper script via subprocess (no shell quoting).
+    wr = await asyncio.create_subprocess_exec(
+        "tee", "/tmp/ts_update.py",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
+    await wr.communicate(input=script_body.encode())
+    if wr.returncode != 0:
+        return {"success": False, "message": "ヘルパースクリプトの書き出しに失敗しました"}
 
+    # Step 2: Execute the helper + timeshift --create via shell.
+    cmd = f"sudo python3 /tmp/ts_update.py && sudo timeshift --create --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
-        f"/bin/bash -c {shlex.quote(full_script)}",
+        cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
