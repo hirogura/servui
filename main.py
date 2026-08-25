@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.1")
+app = FastAPI(title="serv-UI", version="1.4.2")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2224,6 +2224,37 @@ async def timeshift_restore(req: Request):
 
     cmd = f"sudo timeshift --restore --snapshot '{target['name']}' --yes"
     return {"success": True, "cmd": cmd, "message": f"スナップショット {snapshot_id} ({target['name']}) を復元します"}
+
+
+@app.post("/api/timeshift/delete")
+async def timeshift_delete(req: Request):
+    """Delete a Timeshift snapshot."""
+    data = await req.json()
+    snapshot_id = data.get("snapshot_id")
+    if snapshot_id is None:
+        raise HTTPException(status_code=400, detail="snapshot_id is required")
+
+    try:
+        snapshot_id = int(snapshot_id)
+        if snapshot_id < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid snapshot_id")
+
+    snapshots_resp = await timeshift_snapshots()
+    snapshots = snapshots_resp["snapshots"]
+    target = next((s for s in snapshots if s["id"] == snapshot_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"スナップショット {snapshot_id} が見つかりません")
+
+    r = await run_cmd(
+        _sudo(f"timeshift --delete --snapshot '{target['name']}' --yes"),
+        timeout=300,
+    )
+    return {
+        "success": r["returncode"] == 0,
+        "message": f"スナップショット {snapshot_id} ({target['name']}) を削除しました" if r["returncode"] == 0 else f"削除に失敗しました: {r['stderr'] or r['stdout']}",
+    }
 
 
 @app.post("/api/servui/restart")

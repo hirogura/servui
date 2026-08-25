@@ -2494,7 +2494,7 @@ async function loadTimeshiftSnapshots() {
       html += `<td style="padding:0.5rem;font-family:monospace;font-size:0.85rem;">${escapeHtml(s.name)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.tags)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.description)}</td>`;
-      html += `<td style="padding:0.5rem;"><button class="btn btn-danger" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button></td>`;
+      html += `<td style="padding:0.5rem;"><button class="btn btn-danger" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button> <button class="btn btn-danger" onclick="deleteSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">削除</button></td>`;
       html += '</tr>';
     }
     html += '</tbody></table>';
@@ -2635,6 +2635,26 @@ async function restoreSnapshot(id, name) {
       return;
     }
     await sendToTerminal(data.cmd, data.message);
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+async function deleteSnapshot(id, name) {
+  if (!confirm(`スナップショット ${id} (${name}) を削除しますか？\n\n⚠️ この操作は取り消せません`)) return;
+  try {
+    const resp = await fetch('/api/timeshift/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot_id: id }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showTimeshiftStatus(data.message, 'success');
+      loadTimeshiftSnapshots();
+    } else {
+      showTimeshiftStatus(data.message || '削除に失敗しました', 'error');
+    }
   } catch (e) {
     showTimeshiftStatus(`エラー: ${e.message}`, 'error');
   }
