@@ -2203,8 +2203,15 @@ async def timeshift_create(req: Request):
     except OSError as e:
         return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
 
+    # Detect the root device so Timeshift doesn't prompt interactively.
+    root_dev = ""
+    r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
+    if r["returncode"] == 0 and r["stdout"].strip():
+        root_dev = r["stdout"].strip()
+    target_arg = f" --target '{root_dev}'" if root_dev else ""
+
     # Execute the helper + timeshift --create in a detached background process.
-    cmd = f"sudo python3 {ts_script} && sudo timeshift --create --yes{comment_arg}"
+    cmd = f"sudo python3 {ts_script} && sudo timeshift --create{target_arg} --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
