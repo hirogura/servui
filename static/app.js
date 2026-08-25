@@ -7,6 +7,7 @@ let fitAddon = null;
 let refreshInterval = null;
 let wifiStatusData = null;
 let selectedWifiNetwork = null;
+let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
 document.querySelectorAll('.nav-links li').forEach(li => {
@@ -467,6 +468,20 @@ async function autoremovePackages() {
 }
 
 // --- Terminal ---
+function openTerminalAt(path) {
+  if (!path) return;
+  pendingTerminalCwd = path;
+  const cwdLabel = document.getElementById('terminal-cwd-label');
+  if (cwdLabel) cwdLabel.textContent = '';
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  switchTab('terminal');
+}
+
 function connectTerminal() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.close();
@@ -506,7 +521,13 @@ function connectTerminal() {
   setTimeout(() => fitAddon.fit(), 50);
 
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${protocol}://${location.host}/ws/terminal`);
+  const cwdParam = pendingTerminalCwd ? `?cwd=${encodeURIComponent(pendingTerminalCwd)}` : '';
+  const cwdLabel = document.getElementById('terminal-cwd-label');
+  if (cwdLabel) {
+    cwdLabel.textContent = pendingTerminalCwd ? `— ${pendingTerminalCwd} で開いています` : '';
+  }
+  pendingTerminalCwd = null;
+  ws = new WebSocket(`${protocol}://${location.host}/ws/terminal${cwdParam}`);
 
   ws.onopen = () => {
     term.writeln('\x1b[36m接続中...\x1b[0m\r\n');
@@ -982,6 +1003,11 @@ function renderLvmInfo(dev) {
       lvBtns += `<button class="btn btn-sm btn-danger" onclick="unmountDisk('${safeLvPath}','${escapeHtml(lv.mountpoint)}')" title="アンマウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>`;
+      const lvMp = escapeHtml(lv.mountpoint);
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${lvMp}')" title="${lvMp} でターミナルを開く" style="margin-left:0.15rem;">ターミナルで開く</button>`;
+      lvBtns += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${safeLvPath}','${lvMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.15rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>`;
     } else {
       const mountDev = lv.path ? lv.path.replace('/dev/', '') : safeLvPath;
       const fsType = 'ext4';
@@ -1063,6 +1089,10 @@ function renderDiskDevice(dev, depth) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
         アンマウント
       </button>`;
+      actionBtn += `<button class="btn btn-sm btn-secondary" onclick="unmountDisk('${safeName}','${safeMp}',true)" title="強制アンマウント（使用中でも切り離す）" style="margin-left:0.25rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        強制アンマウント
+      </button>`;
     } else {
       actionBtn = `<button class="btn btn-sm btn-primary" onclick="openDiskMountModal('${safeName}','${safeFs}')" title="マウント">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:0.85rem;height:0.85rem;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1106,7 +1136,10 @@ function renderDiskDevice(dev, depth) {
   let infoRows = '';
   if (dev.fstype) infoRows += `<tr><td>ファイルシステム</td><td>${escapeHtml(dev.fstype)}</td></tr>`;
   if (dev.size) infoRows += `<tr><td>サイズ</td><td>${escapeHtml(dev.size)}</td></tr>`;
-  if (dev.mountpoint) infoRows += `<tr><td>マウントポイント</td><td>${escapeHtml(dev.mountpoint)}</td></tr>`;
+  if (dev.mountpoint) {
+    const mpSafe = escapeHtml(dev.mountpoint);
+    infoRows += `<tr><td>マウントポイント</td><td>${mpSafe} <button class="btn btn-sm btn-secondary" onclick="openTerminalAt('${mpSafe}')" title="${mpSafe} でターミナルを開く" style="margin-left:0.4rem;">ターミナルで開く</button></td></tr>`;
+  }
   if (dev.model) infoRows += `<tr><td>モデル</td><td>${escapeHtml(dev.model)}</td></tr>`;
   if (dev.serial) infoRows += `<tr><td>シリアル</td><td>${escapeHtml(dev.serial)}</td></tr>`;
   if (dev.uuid) infoRows += `<tr><td>UUID</td><td style="font-size:0.75rem;">${escapeHtml(dev.uuid)}</td></tr>`;
@@ -1245,14 +1278,17 @@ async function submitDiskMount() {
   }
 }
 
-async function unmountDisk(deviceName, mountPoint) {
-  if (!confirm(`${mountPoint} をアンマウントしますか？`)) return;
+async function unmountDisk(deviceName, mountPoint, force = false) {
+  const confirmMsg = force
+    ? `${mountPoint} を強制アンマウントしますか？\n（使用中のプロセスがあっても強制的に切り離します）`
+    : `${mountPoint} をアンマウントしますか？`;
+  if (!confirm(confirmMsg)) return;
 
   try {
     const resp = await fetch('/api/disks/unmount', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device: deviceName, mount_point: mountPoint }),
+      body: JSON.stringify({ device: deviceName, mount_point: mountPoint, force }),
     });
     const data = await resp.json();
     if (data.success) {

@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.2.0")
+app = FastAPI(title="serv-UI", version="1.3.0")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -504,16 +504,30 @@ def _build_term_env(target_user: str, target_home: str, target_shell: str) -> di
     return env
 
 
+def _sanitize_cwd(cwd: str) -> str:
+    """Validate a client-supplied terminal working directory (returns '' when invalid)."""
+    cwd = (cwd or "").strip()
+    if not cwd or not cwd.startswith("/"):
+        return ""
+    if ".." in cwd.split("/") or any(ch in cwd for ch in ("\n", "\r", "\x00")):
+        return ""
+    if not os.path.isdir(cwd):
+        return ""
+    return cwd
+
+
 @app.websocket("/ws/terminal")
-async def websocket_terminal(websocket: WebSocket):
+async def websocket_terminal(websocket: WebSocket, cwd: str = ""):
     """WebSocket-based terminal using PTY for clean terminal emulation.
-    Uses setpriv when running as root (like selfcode), falls back to sudo+su."""
+    Uses setpriv when running as root (like selfcode), falls back to sudo+su.
+    Optional `cwd` query param starts the shell in that directory."""
     await websocket.accept()
 
     target_user, target_home, target_shell = get_primary_user()
     is_root = os.getuid() == 0
     cur_user_name = pwd.getpwuid(os.getuid()).pw_name
     env = _build_term_env(target_user, target_home, target_shell)
+    start_dir = _sanitize_cwd(cwd)
 
     pid, master_fd = pty.fork()
     if pid == 0:
@@ -522,12 +536,25 @@ async def websocket_terminal(websocket: WebSocket):
             cur_uid = os.getuid()
             cur_user = pwd.getpwuid(cur_uid).pw_name if pwd.getpwuid(cur_uid) else ""
 
+            cd_prefix = f"cd {shlex.quote(start_dir)} && " if start_dir else ""
+            inner_cmd = f"{cd_prefix}exec {target_shell} -l"
+
             if cur_uid == 0 and cur_user != target_user:
                 # Running as root: use setpriv for clean user switch (like selfcode)
                 # setpriv replaces the process image directly, so job control works correctly
-                os.execvpe(
-                    "/usr/bin/setpriv",
-                    [
+                if start_dir:
+                    child_argv = [
+                        "/usr/bin/setpriv",
+                        f"--reuid={target_user}",
+                        f"--regid={target_user}",
+                        "--init-groups",
+                        "--",
+                        "/bin/bash",
+                        "-c",
+                        inner_cmd,
+                    ]
+                else:
+                    child_argv = [
                         "/usr/bin/setpriv",
                         f"--reuid={target_user}",
                         f"--regid={target_user}",
@@ -535,26 +562,25 @@ async def websocket_terminal(websocket: WebSocket):
                         "--",
                         target_shell,
                         "-l",
-                    ],
-                    env,
-                )
+                    ]
+                os.execvpe("/usr/bin/setpriv", child_argv, env)
             elif cur_user != target_user:
                 # Non-root: switch via sudo + su (su is allowed in sudoers)
-                os.execvpe(
-                    "/usr/bin/sudo",
-                    ["/usr/bin/sudo", "/usr/bin/su", "-", target_user],
-                    env,
-                )
+                if start_dir:
+                    child_argv = ["/usr/bin/sudo", "/usr/bin/su", "-", target_user, "-c", inner_cmd]
+                else:
+                    child_argv = ["/usr/bin/sudo", "/usr/bin/su", "-", target_user]
+                os.execvpe("/usr/bin/sudo", child_argv, env)
             else:
                 # Already target_user: cd to home directory and launch login shell
                 try:
-                    os.chdir(target_home)
+                    os.chdir(start_dir or target_home)
                 except Exception:
                     pass
                 os.execvpe(target_shell, [target_shell, "-l"], env)
         except Exception:
             try:
-                os.chdir(target_home)
+                os.chdir(start_dir or target_home)
             except Exception:
                 pass
             os.execlp(target_shell, target_shell, "-l")
@@ -1198,10 +1224,12 @@ async def disks_mount(req: Request):
 
 @app.post("/api/disks/unmount")
 async def disks_unmount(req: Request):
-    """Unmount a partition."""
+    """Unmount a partition. With force=True, use lazy unmount (umount -l)
+    so busy mount points (e.g. open terminal cwd) can still be detached."""
     data = await req.json()
     device_name = data.get("device", "").strip()
     mount_point = data.get("mount_point", "").strip()
+    force = bool(data.get("force", False))
 
     if not device_name and not mount_point:
         raise HTTPException(status_code=400, detail="device or mount_point is required")
@@ -1210,7 +1238,8 @@ async def disks_unmount(req: Request):
     device_path = f"/dev/{device_name}" if not device_name.startswith("/dev/") else device_name
 
     # Unmount
-    res = await run_cmd(_sudo(f"umount {target}"), timeout=15)
+    umount_opts = "-l" if force else ""
+    res = await run_cmd(_sudo(f"umount {umount_opts} {target}".strip()), timeout=30)
     if res["returncode"] != 0:
         return {"success": False, "message": f"アンマウントに失敗しました: {res['stderr']}"}
 
@@ -1218,7 +1247,9 @@ async def disks_unmount(req: Request):
     fstab_check = await run_cmd(f"grep -n '{device_path}\\|{mount_point}' /etc/fstab 2>/dev/null", timeout=5)
     fstab_entry = fstab_check["stdout"].strip() if fstab_check["returncode"] == 0 else ""
 
-    msg = f"アンマウントしました: {target}"
+    msg = f"強制アンマウントしました: {target}" if force else f"アンマウントしました: {target}"
+    if force:
+        msg += "\n（使用中のプロセスからは切り離されています。ターミナルで開いていた場合は閉じてください）"
     if fstab_entry:
         msg += "\n注意: /etc/fstabにエントリが残っています。永続マウント設定を解除する場合はターミナルで手動で削除してください。"
 
