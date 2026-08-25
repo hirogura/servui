@@ -2029,40 +2029,70 @@ async def timeshift_snapshots():
         raise HTTPException(status_code=500, detail=r["stderr"] or r["stdout"])
 
     snapshots = []
+    # Output format:
+    #   Num   Name                   Tags  Description
+    #   ------------------------------------------------
+    #   0   > 2024-12-15_10-30-45   O     Initial snapshot
+    #   1   > 2024-12-19_08-00-01   W     Weekly scheduled
     for line in r["stdout"].splitlines():
-        line = line.strip()
-        # Lines like: "  1    2025-01-15 10:30:00  /dev/nvme0n1p2  btrfs  @"
-        m = re.match(
-            r"^\s*(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+\s+(.+)$",
-            line,
-        )
+        m = re.match(r"^\s*(\d+)\s+>\s+(\S+)\s+(\S+)\s*(.*)", line)
         if m:
             snapshots.append({
                 "id": int(m.group(1)),
-                "date": m.group(2).strip(),
-                "name": m.group(3).strip(),
+                "name": m.group(2).strip(),
+                "tags": m.group(3).strip(),
+                "description": m.group(4).strip(),
             })
     return {"snapshots": snapshots}
 
 
 @app.post("/api/timeshift/create")
 async def timeshift_create(req: Request):
-    """Build the command to create a Timeshift snapshot (sent to terminal)."""
+    """Build the command to create a Timeshift snapshot (sent to terminal).
+
+    Excludes are written into /etc/timeshift/timeshift.json before running
+    ``timeshift --create`` because the CLI does not accept ``--exclude`` flags.
+    """
     data = await req.json()
     comment = (data.get("comment") or "").strip()
     excludes_raw = (data.get("excludes") or "").strip()
 
-    # Build the full command string to send to terminal.
-    exclude_args = ""
+    excludes: list[str] = []
     if excludes_raw:
-        for line in excludes_raw.splitlines():
-            p = line.strip()
-            if p:
-                exclude_args += f" --exclude '{p}'"
+        excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
 
-    cmd = f"sudo timeshift --create --yes --comments '{comment}'{exclude_args}"
+    # Build a shell snippet that:
+    #   1. Updates the exclude array in /etc/timeshift/timeshift.json via python3
+    #   2. Runs timeshift --create
+    exclude_json = json.dumps(excludes)
+    update_cfg = (
+        f"python3 -c \""
+        f"import json,os; "
+        f"c='/etc/timeshift/timeshift.json'; "
+        f"d={{}} if not os.path.isfile(c) else json.load(open(c)); "
+        f"d['exclude']={exclude_json}; "
+        f"d.setdefault('btrfs_mode','false'); "
+        f"d.setdefault('schedule_monthly','false'); "
+        f"d.setdefault('schedule_weekly','false'); "
+        f"d.setdefault('schedule_daily','false'); "
+        f"d.setdefault('schedule_hourly','false'); "
+        f"d.setdefault('schedule_boot','false'); "
+        f"d.setdefault('count_monthly','2'); "
+        f"d.setdefault('count_weekly','3'); "
+        f"d.setdefault('count_daily','5'); "
+        f"d.setdefault('count_hourly','6'); "
+        f"d.setdefault('count_boot','5'); "
+        f"d.setdefault('exclude-apps',[]); "
+        f"json.dump(d,open(c,'w'),indent=2)\""
+    )
 
-    return {"success": True, "cmd": cmd, "message": f"スナップショットを作成します: {comment or '(コメントなし)'}"}
+    parts = [f"sudo sh -c '{update_cfg}'"]
+    comment_arg = f" --comments '{comment}'" if comment else ""
+    parts.append(f"sudo timeshift --create --yes{comment_arg}")
+    cmd = " && ".join(parts)
+
+    label = comment or "(コメントなし)"
+    return {"success": True, "cmd": cmd, "message": f"スナップショットを作成します: {label}"}
 
 
 @app.post("/api/timeshift/restore")
@@ -2087,8 +2117,8 @@ async def timeshift_restore(req: Request):
     if target is None:
         raise HTTPException(status_code=404, detail=f"スナップショット {snapshot_id} が見つかりません")
 
-    cmd = f"sudo timeshift --restore --snapshot-device '{target['name']}' --yes"
-    return {"success": True, "cmd": cmd, "message": f"スナップショット {snapshot_id} ({target['date']}) を復元します"}
+    cmd = f"sudo timeshift --restore --snapshot '{target['name']}' --yes"
+    return {"success": True, "cmd": cmd, "message": f"スナップショット {snapshot_id} ({target['name']}) を復元します"}
 
 
 @app.post("/api/servui/restart")
