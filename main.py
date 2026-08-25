@@ -2008,7 +2008,7 @@ def _reset_ts_create_state(**kw) -> None:
     }, **kw)
 
 
-async def _timeshift_create_worker() -> None:
+async def _timeshift_create_worker(script_path: str) -> None:
     """Wait for the timeshift subprocess to finish and update state."""
     global _ts_create_proc
     async with _ts_create_lock:
@@ -2035,6 +2035,10 @@ async def _timeshift_create_worker() -> None:
             _ts_create_state["running"] = False
     finally:
         _ts_create_proc = None
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
 
 
 @app.get("/api/timeshift/status")
@@ -2141,14 +2145,15 @@ async def timeshift_create(req: Request):
     )
 
     # Write the helper script directly (no shell, no subprocess).
+    ts_script = f"/tmp/ts_update_{os.getpid()}.py"
     try:
-        with open("/tmp/ts_update.py", "w") as f:
+        with open(ts_script, "w") as f:
             f.write(script_body)
     except OSError as e:
         return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
 
     # Execute the helper + timeshift --create in a detached background process.
-    cmd = f"sudo python3 /tmp/ts_update.py && sudo timeshift --create --yes{comment_arg}"
+    cmd = f"sudo python3 {ts_script} && sudo timeshift --create --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -2160,7 +2165,7 @@ async def timeshift_create(req: Request):
         _ts_create_proc = proc
         _reset_ts_create_state(running=True)
 
-    asyncio.create_task(_timeshift_create_worker())
+    asyncio.create_task(_timeshift_create_worker(ts_script))
 
     label = comment or "(コメントなし)"
     return {"success": True, "message": f"スナップショットを作成中: {label}"}
