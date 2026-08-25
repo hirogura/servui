@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.4")
+app = FastAPI(title="serv-UI", version="1.4.5")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -1993,8 +1993,6 @@ async def backup_cmd(req: Request):
 # Timeshift
 # ---------------------------------------------------------------------------
 
-_TS_CREATE_LOG = "/var/log/timeshift-create.log"
-
 _ts_create_state: dict = {
     "running": False, "success": None, "log": "",
 }
@@ -2017,14 +2015,9 @@ async def _timeshift_create_worker(script_path: str) -> None:
     if proc is None:
         return
     try:
-        await proc.communicate()
+        stdout, _ = await proc.communicate()
         rc = proc.returncode
-        log = ""
-        try:
-            with open(_TS_CREATE_LOG, encoding="utf-8", errors="replace") as f:
-                log = f.read()[-4000:]
-        except OSError:
-            pass
+        log = (stdout or b"").decode("utf-8", errors="replace")[-4000:]
         async with _ts_create_lock:
             _ts_create_state["success"] = rc == 0
             _ts_create_state["log"] = log
@@ -2182,9 +2175,11 @@ async def timeshift_create(req: Request):
         "#!/usr/bin/env python3\n"
         "import json, os\n"
         "c = '/etc/timeshift/timeshift.json'\n"
-        "d = {} if not os.path.isfile(c) else json.load(open(c))\n"
+        "d = {}\n"
+        "if os.path.isfile(c):\n"
+        "    with open(c) as _f: d = json.load(_f)\n"
         f"d['exclude'] = {exclude_json}\n"
-        "d['do_first_run'] = 'false'\n"
+        "if os.path.isfile(c): d['do_first_run'] = 'false'\n"
         "d.setdefault('btrfs_mode', 'false')\n"
         "d.setdefault('schedule_monthly', 'false')\n"
         "d.setdefault('schedule_weekly', 'false')\n"
@@ -2197,7 +2192,7 @@ async def timeshift_create(req: Request):
         "d.setdefault('count_hourly', '6')\n"
         "d.setdefault('count_boot', '5')\n"
         "d.setdefault('exclude-apps', [])\n"
-        "json.dump(d, open(c, 'w'), indent=2)\n"
+        "with open(c, 'w') as _f: json.dump(d, _f, indent=2)\n"
     )
 
     # Write the helper script directly (no shell, no subprocess).
