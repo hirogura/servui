@@ -1992,6 +1992,51 @@ async def backup_cmd(req: Request):
 # Timeshift
 # ---------------------------------------------------------------------------
 
+_TS_CREATE_LOG = "/var/log/timeshift-create.log"
+
+_ts_create_state: dict = {
+    "running": False, "success": None, "log": "",
+}
+_ts_create_lock = asyncio.Lock()
+_ts_create_proc: asyncio.subprocess.Process | None = None
+
+
+def _reset_ts_create_state(**kw) -> None:
+    _ts_create_state.clear()
+    _ts_create_state.update({
+        "running": False, "success": None, "log": "",
+    }, **kw)
+
+
+async def _timeshift_create_worker() -> None:
+    """Wait for the timeshift subprocess to finish and update state."""
+    global _ts_create_proc
+    async with _ts_create_lock:
+        proc = _ts_create_proc
+    if proc is None:
+        return
+    try:
+        await proc.communicate()
+        rc = proc.returncode
+        log = ""
+        try:
+            with open(_TS_CREATE_LOG, encoding="utf-8", errors="replace") as f:
+                log = f.read()[-4000:]
+        except OSError:
+            pass
+        async with _ts_create_lock:
+            _ts_create_state["success"] = rc == 0
+            _ts_create_state["log"] = log
+            _ts_create_state["running"] = False
+    except Exception as e:
+        async with _ts_create_lock:
+            _ts_create_state["success"] = False
+            _ts_create_state["log"] = str(e)
+            _ts_create_state["running"] = False
+    finally:
+        _ts_create_proc = None
+
+
 @app.get("/api/timeshift/status")
 async def timeshift_status():
     """Check whether Timeshift is installed and detect its mode (rsync/btrfs)."""
@@ -2029,11 +2074,6 @@ async def timeshift_snapshots():
         raise HTTPException(status_code=500, detail=r["stderr"] or r["stdout"])
 
     snapshots = []
-    # Output format:
-    #   Num   Name                   Tags  Description
-    #   ------------------------------------------------
-    #   0   > 2024-12-15_10-30-45   O     Initial snapshot
-    #   1   > 2024-12-19_08-00-01   W     Weekly scheduled
     for line in r["stdout"].splitlines():
         m = re.match(r"^\s*(\d+)\s+>\s+(\S+)\s+(\S+)\s*(.*)", line)
         if m:
@@ -2048,11 +2088,15 @@ async def timeshift_snapshots():
 
 @app.post("/api/timeshift/create")
 async def timeshift_create(req: Request):
-    """Build the command to create a Timeshift snapshot (sent to terminal).
+    """Start creating a Timeshift snapshot in the background.
 
-    Excludes are written into /etc/timeshift/timeshift.json before running
-    ``timeshift --create`` because the CLI does not accept ``--exclude`` flags.
+    The exclude paths are written into /etc/timeshift/timeshift.json first
+    because the Timeshift CLI does not accept ``--exclude`` flags.
     """
+    async with _ts_create_lock:
+        if _ts_create_state["running"]:
+            return {"success": False, "message": "スナップショット作成が既に実行中です"}
+
     data = await req.json()
     comment = (data.get("comment") or "").strip()
     excludes_raw = (data.get("excludes") or "").strip()
@@ -2061,8 +2105,6 @@ async def timeshift_create(req: Request):
     if excludes_raw:
         excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
 
-    # Write a helper script via heredoc (avoids all shell-quoting issues),
-    # then run it to update the config, and finally create the snapshot.
     exclude_json = json.dumps(excludes)
     safe_comment = comment.replace("'", "'\\''") if comment else ""
     comment_arg = f" --comments '{safe_comment}'" if comment else ""
@@ -2088,19 +2130,60 @@ async def timeshift_create(req: Request):
         "json.dump(d, open(c, 'w'), indent=2)\n"
     )
 
-    # Use a quoted heredoc (<<'EOF') so the shell does NOT expand anything
-    # inside the script body.  The full command is sent to the terminal as
-    # a single string with embedded newlines; xterm.js / the PTY processes
-    # it identically to manual line-by-line input.
-    cmd = (
+    # Build a full shell script that updates the config then runs timeshift.
+    full_script = (
+        "#!/bin/bash\nset -e\n"
         "cat > /tmp/ts_update.py << 'TSEOF'\n"
         f"{script_body}"
         "TSEOF\n"
-        f"sudo python3 /tmp/ts_update.py && sudo timeshift --create --yes{comment_arg}"
+        f"sudo python3 /tmp/ts_update.py\n"
+        f"sudo timeshift --create --yes{comment_arg}\n"
     )
 
+    proc = await asyncio.create_subprocess_shell(
+        f"/bin/bash -c {shlex.quote(full_script)}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    )
+    global _ts_create_proc
+    async with _ts_create_lock:
+        _ts_create_proc = proc
+        _reset_ts_create_state(running=True)
+
+    asyncio.create_task(_timeshift_create_worker())
+
     label = comment or "(コメントなし)"
-    return {"success": True, "cmd": cmd, "message": f"スナップショットを作成します: {label}"}
+    return {"success": True, "message": f"スナップショットを作成中: {label}"}
+
+
+@app.get("/api/timeshift/create/status")
+async def timeshift_create_status():
+    """Return current state of the background snapshot creation."""
+    st = dict(_ts_create_state)
+    return st
+
+
+@app.post("/api/timeshift/create/cancel")
+async def timeshift_create_cancel():
+    """Cancel a running snapshot creation."""
+    async with _ts_create_lock:
+        if not _ts_create_state["running"]:
+            return {"success": False, "message": "実行中の作成はありません"}
+        proc = _ts_create_proc
+    if proc is not None and proc.returncode is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    async with _ts_create_lock:
+        _ts_create_state["log"] = "キャンセルしました"
+        _ts_create_state["running"] = False
+        _ts_create_state["success"] = False
+    return {"success": True, "message": "キャンセルしています..."}
 
 
 @app.post("/api/timeshift/restore")

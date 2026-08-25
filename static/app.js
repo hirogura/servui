@@ -2432,6 +2432,7 @@ let timeshiftStatusData = null;
 async function loadTimeshiftPage() {
   loadTimeshiftStatus();
   loadTimeshiftSnapshots();
+  syncTimeshiftCreateStatus();
 }
 
 async function loadTimeshiftStatus() {
@@ -2510,12 +2511,108 @@ async function createSnapshot() {
     });
     const data = await resp.json();
     if (!data.success) {
-      showTimeshiftStatus('スナップショット作成コマンドの生成に失敗しました', 'error');
+      showTimeshiftStatus(data.message || 'スナップショット作成の開始に失敗しました', 'error');
       return;
     }
-    await sendToTerminal(data.cmd, data.message);
+    showTimeshiftStatus(data.message, 'info');
+    startTimeshiftCreatePolling();
   } catch (e) {
     showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+let tsCreatePollTimer = null;
+
+function startTimeshiftCreatePolling() {
+  const createBtn = document.getElementById('btn-timeshift-create');
+  const cancelBtn = document.getElementById('btn-timeshift-create-cancel');
+  const progress = document.getElementById('timeshift-create-progress');
+  const bar = document.getElementById('timeshift-create-bar');
+  const text = document.getElementById('timeshift-create-text');
+  const logEl = document.getElementById('timeshift-create-log');
+  createBtn.disabled = true;
+  cancelBtn.disabled = false;
+  progress.style.display = 'block';
+  bar.style.width = '30%';
+  text.textContent = 'スナップショットを作成中...';
+  logEl.style.display = 'none';
+  if (tsCreatePollTimer) clearInterval(tsCreatePollTimer);
+  tsCreatePollTimer = setInterval(pollTimeshiftCreateStatus, 2000);
+}
+
+function stopTimeshiftCreatePolling() {
+  if (tsCreatePollTimer) { clearInterval(tsCreatePollTimer); tsCreatePollTimer = null; }
+  document.getElementById('btn-timeshift-create-cancel').disabled = true;
+}
+
+function syncTimeshiftCreateStatus() {
+  fetch('/api/timeshift/create/status')
+    .then(r => r.json())
+    .then(s => {
+      if (s.running && !tsCreatePollTimer) startTimeshiftCreatePolling();
+    })
+    .catch(() => {});
+}
+
+async function pollTimeshiftCreateStatus() {
+  let s;
+  try {
+    const resp = await fetch('/api/timeshift/create/status');
+    s = await resp.json();
+  } catch (e) { return; }
+  const bar = document.getElementById('timeshift-create-bar');
+  const text = document.getElementById('timeshift-create-text');
+  const logEl = document.getElementById('timeshift-create-log');
+  if (s.running) {
+    bar.style.width = '60%';
+    text.textContent = 'スナップショットを作成中...';
+    return;
+  }
+  stopTimeshiftCreatePolling();
+  bar.style.width = '100%';
+  if (s.success) {
+    text.textContent = 'スナップショットを作成しました';
+    bar.style.background = 'var(--success, #22c55e)';
+    showTimeshiftStatus('スナップショットを作成しました', 'success');
+    document.getElementById('btn-timeshift-create').disabled = false;
+    loadTimeshiftSnapshots();
+  } else {
+    text.textContent = 'スナップショット作成に失敗しました';
+    bar.style.background = 'var(--danger, #ef4444)';
+    showTimeshiftStatus('スナップショット作成に失敗しました', 'error');
+    document.getElementById('btn-timeshift-create').disabled = false;
+    if (s.log) {
+      logEl.textContent = s.log;
+      logEl.style.display = 'block';
+    }
+  }
+  setTimeout(() => {
+    document.getElementById('timeshift-create-progress').style.display = 'none';
+    bar.style.width = '0%';
+    bar.style.background = '';
+    logEl.style.display = 'none';
+  }, 5000);
+}
+
+async function cancelTimeshiftCreate() {
+  if (!confirm('スナップショット作成をキャンセルしますか？')) return;
+  try {
+    await fetch('/api/timeshift/create/cancel', { method: 'POST' });
+    stopTimeshiftCreatePolling();
+    const bar = document.getElementById('timeshift-create-bar');
+    const text = document.getElementById('timeshift-create-text');
+    bar.style.width = '100%';
+    bar.style.background = 'var(--danger, #ef4444)';
+    text.textContent = 'キャンセルしました';
+    document.getElementById('btn-timeshift-create').disabled = false;
+    showTimeshiftStatus('キャンセルしました', 'info');
+    setTimeout(() => {
+      document.getElementById('timeshift-create-progress').style.display = 'none';
+      bar.style.width = '0%';
+      bar.style.background = '';
+    }, 3000);
+  } catch (e) {
+    showTimeshiftStatus(`キャンセルエラー: ${e.message}`, 'error');
   }
 }
 

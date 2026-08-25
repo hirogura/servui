@@ -653,6 +653,16 @@
         <button class="btn btn-success" id="btn-timeshift-create" onclick="createSnapshot()" disabled>
           スナップショット作成
         </button>
+        <button class="btn btn-danger" id="btn-timeshift-create-cancel" onclick="cancelTimeshiftCreate()" disabled style="margin-left:0.5rem;">
+          キャンセル
+        </button>
+        <div id="timeshift-create-progress" style="display:none;margin-top:0.75rem;">
+          <div style="background:var(--bg-secondary);border-radius:6px;overflow:hidden;height:6px;">
+            <div id="timeshift-create-bar" style="height:100%;width:0%;background:var(--accent);transition:width 0.5s;"></div>
+          </div>
+          <p id="timeshift-create-text" class="muted" style="margin-top:0.4rem;font-size:0.85rem;"></p>
+        </div>
+        <pre id="timeshift-create-log" style="display:none;margin-top:0.75rem;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:0.75rem;font-size:0.8rem;color:var(--text);white-space:pre-wrap;"></pre>
       </div>
 
       <h2>スナップショット一覧</h2>
