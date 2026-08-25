@@ -2476,11 +2476,10 @@ async function loadTimeshiftSnapshots() {
     const resp = await fetch('/api/timeshift/snapshots');
     const data = await resp.json();
     const snaps = data.snapshots || [];
-    const excludes = data.excludes || [];
-    const excludesLabel = excludes.length > 0 ? excludes.join(', ') : 'なし';
     const excludesEl = document.getElementById('timeshift-current-excludes');
-    if (excludesEl) {
-      excludesEl.textContent = excludes.length > 0 ? excludes.join('\n') : 'なし';
+    if (excludesEl && data.excludes) {
+      const ex = data.excludes || [];
+      excludesEl.textContent = ex.length > 0 ? ex.join('\n') : 'なし';
     }
     if (snaps.length === 0) {
       listEl.innerHTML = '<p class="muted">スナップショットはありません。</p>';
@@ -2488,14 +2487,13 @@ async function loadTimeshiftSnapshots() {
     }
     let html = '<table style="width:100%;border-collapse:collapse;font-size:0.9rem;">';
     html += '<thead><tr style="border-bottom:1px solid var(--border);text-align:left;">';
-    html += '<th style="padding:0.5rem;">ID</th><th style="padding:0.5rem;">名前</th><th style="padding:0.5rem;">タグ</th><th style="padding:0.5rem;">説明</th><th style="padding:0.5rem;">除外フォルダ</th><th style="padding:0.5rem;"></th></tr></thead><tbody>';
+    html += '<th style="padding:0.5rem;">ID</th><th style="padding:0.5rem;">名前</th><th style="padding:0.5rem;">タグ</th><th style="padding:0.5rem;">説明</th><th style="padding:0.5rem;"></th></tr></thead><tbody>';
     for (const s of snaps) {
       html += `<tr style="border-bottom:1px solid var(--border);">`;
       html += `<td style="padding:0.5rem;">${escapeHtml(String(s.id))}</td>`;
       html += `<td style="padding:0.5rem;font-family:monospace;font-size:0.85rem;">${escapeHtml(s.name)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.tags)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.description)}</td>`;
-      html += `<td style="padding:0.5rem;font-family:monospace;font-size:0.8rem;">${escapeHtml(excludesLabel)}</td>`;
       html += `<td style="padding:0.5rem;"><button class="btn btn-danger" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button></td>`;
       html += '</tr>';
     }
