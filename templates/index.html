@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.5</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.6</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -665,12 +665,17 @@
             </div>
           </div>
         </div>
-        <button class="btn btn-success" id="btn-timeshift-create" onclick="createSnapshot()" disabled>
-          スナップショット作成
-        </button>
-        <button class="btn btn-danger" id="btn-timeshift-create-cancel" onclick="cancelTimeshiftCreate()" disabled style="margin-left:0.5rem;">
-          キャンセル
-        </button>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;">
+          <button class="btn btn-primary" id="btn-timeshift-save-excludes" onclick="saveTimeshiftExcludes()" disabled>
+            除外設定を保存
+          </button>
+          <button class="btn btn-success" id="btn-timeshift-create" onclick="createSnapshot()" disabled>
+            スナップショット作成
+          </button>
+          <button class="btn btn-danger" id="btn-timeshift-create-cancel" onclick="cancelTimeshiftCreate()" disabled>
+            キャンセル
+          </button>
+        </div>
         <div id="timeshift-create-progress" style="display:none;margin-top:0.75rem;">
           <div style="background:var(--bg-secondary);border-radius:6px;overflow:hidden;height:6px;">
             <div id="timeshift-create-bar" style="height:100%;width:0%;background:var(--accent);transition:width 0.5s;"></div>

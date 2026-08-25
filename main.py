@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.5")
+app = FastAPI(title="serv-UI", version="1.4.6")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2159,6 +2159,40 @@ async def timeshift_snapshots():
             excludes = default_excludes
 
     return {"snapshots": snapshots, "excludes": excludes}
+
+
+@app.post("/api/timeshift/excludes")
+async def timeshift_save_excludes(req: Request):
+    """Save the exclude list to /etc/timeshift/timeshift.json."""
+    data = await req.json()
+    excludes_raw = data.get("excludes")
+
+    excludes: list[str] = []
+    if isinstance(excludes_raw, list):
+        excludes = [str(x).strip() for x in excludes_raw if str(x).strip()]
+    elif isinstance(excludes_raw, str) and excludes_raw.strip():
+        excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
+
+    cfg_path = "/etc/timeshift/timeshift.json"
+    cfg: dict = {}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    cfg["exclude"] = excludes
+    cfg.setdefault("do_first_run", "false")
+    cfg.setdefault("btrfs_mode", "false")
+    cfg.setdefault("exclude-apps", [])
+
+    try:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError as e:
+        return {"success": False, "message": f"設定ファイルの書き出しに失敗しました: {e}"}
+
+    return {"success": True, "message": "除外設定を保存しました"}
 
 
 @app.post("/api/timeshift/create")

@@ -2446,6 +2446,7 @@ async function loadTimeshiftStatus() {
   const envEl = document.getElementById('timeshift-env-status');
   const installBtn = document.getElementById('btn-timeshift-install');
   const createBtn = document.getElementById('btn-timeshift-create');
+  const saveBtn = document.getElementById('btn-timeshift-save-excludes');
   const refreshBtn = document.getElementById('btn-timeshift-refresh');
   try {
     const resp = await fetch('/api/timeshift/status');
@@ -2455,12 +2456,14 @@ async function loadTimeshiftStatus() {
       envEl.innerHTML = `<span class="text-success">✔ インストール済み</span> <span class="muted">(${escapeHtml(modeLabel)})</span>`;
       installBtn.style.display = 'none';
       createBtn.disabled = false;
+      saveBtn.disabled = false;
       refreshBtn.disabled = false;
     } else {
       envEl.innerHTML = `<span class="text-danger">未インストール</span>`;
       installBtn.disabled = false;
       installBtn.style.display = '';
       createBtn.disabled = true;
+      saveBtn.disabled = true;
       refreshBtn.disabled = true;
     }
   } catch (e) {
@@ -2513,6 +2516,30 @@ function removeTimeshiftExclude(idx) {
   if (idx >= 0 && idx < timeshiftExcludes.length) {
     timeshiftExcludes.splice(idx, 1);
     renderTimeshiftExcludes();
+  }
+}
+
+async function saveTimeshiftExcludes() {
+  const btn = document.getElementById('btn-timeshift-save-excludes');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const resp = await fetch('/api/timeshift/excludes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ excludes: timeshiftExcludes }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showTimeshiftStatus(data.message, 'success');
+    } else {
+      showTimeshiftStatus(data.message || '除外設定の保存に失敗しました', 'error');
+    }
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '除外設定を保存';
   }
 }
 
@@ -2576,12 +2603,14 @@ let tsCreatePollTimer = null;
 
 function startTimeshiftCreatePolling() {
   const createBtn = document.getElementById('btn-timeshift-create');
+  const saveBtn = document.getElementById('btn-timeshift-save-excludes');
   const cancelBtn = document.getElementById('btn-timeshift-create-cancel');
   const progress = document.getElementById('timeshift-create-progress');
   const bar = document.getElementById('timeshift-create-bar');
   const text = document.getElementById('timeshift-create-text');
   const logEl = document.getElementById('timeshift-create-log');
   createBtn.disabled = true;
+  saveBtn.disabled = true;
   cancelBtn.disabled = false;
   progress.style.display = 'block';
   bar.style.width = '30%';
@@ -2626,12 +2655,14 @@ async function pollTimeshiftCreateStatus() {
     bar.style.background = 'var(--success, #22c55e)';
     showTimeshiftStatus('スナップショットを作成しました', 'success');
     document.getElementById('btn-timeshift-create').disabled = false;
+    document.getElementById('btn-timeshift-save-excludes').disabled = false;
     loadTimeshiftSnapshots();
   } else {
     text.textContent = 'スナップショット作成に失敗しました';
     bar.style.background = 'var(--danger, #ef4444)';
     showTimeshiftStatus('スナップショット作成に失敗しました', 'error');
     document.getElementById('btn-timeshift-create').disabled = false;
+    document.getElementById('btn-timeshift-save-excludes').disabled = false;
     if (s.log) {
       logEl.textContent = s.log;
       logEl.style.display = 'block';
@@ -2656,6 +2687,7 @@ async function cancelTimeshiftCreate() {
     bar.style.background = 'var(--danger, #ef4444)';
     text.textContent = 'キャンセルしました';
     document.getElementById('btn-timeshift-create').disabled = false;
+    document.getElementById('btn-timeshift-save-excludes').disabled = false;
     showTimeshiftStatus('キャンセルしました', 'info');
     setTimeout(() => {
       document.getElementById('timeshift-create-progress').style.display = 'none';
