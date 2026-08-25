@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.3.0")
+app = FastAPI(title="serv-UI", version="1.4.0")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -1986,6 +1986,109 @@ async def backup_cmd(req: Request):
         return {"success": True, "cmd": cmd, "message": f"復元元: {device} / イメージ: {image}"}
 
     raise HTTPException(status_code=400, detail="mode must be 'backup' or 'restore'")
+
+
+# ---------------------------------------------------------------------------
+# Timeshift
+# ---------------------------------------------------------------------------
+
+@app.get("/api/timeshift/status")
+async def timeshift_status():
+    """Check whether Timeshift is installed and detect its mode (rsync/btrfs)."""
+    r = await run_cmd("which timeshift 2>/dev/null", timeout=5)
+    installed = r["returncode"] == 0
+
+    mode = None
+    if installed:
+        mr = await run_cmd("timeshift --list 2>&1 | head -20", timeout=15)
+        txt = mr["stdout"].lower()
+        if "btrfs" in txt:
+            mode = "btrfs"
+        elif "rsync" in txt:
+            mode = "rsync"
+
+    return {"installed": installed, "mode": mode}
+
+
+@app.post("/api/timeshift/install")
+async def timeshift_install():
+    """Install Timeshift via apt."""
+    r = await run_cmd(_sudo("apt install -y timeshift"), timeout=120)
+    return {
+        "success": r["returncode"] == 0,
+        "stdout": r["stdout"],
+        "stderr": r["stderr"],
+    }
+
+
+@app.get("/api/timeshift/snapshots")
+async def timeshift_snapshots():
+    """List existing Timeshift snapshots."""
+    r = await run_cmd("timeshift --list 2>&1", timeout=30)
+    if r["returncode"] != 0 and "no snapshots found" not in r["stdout"].lower():
+        raise HTTPException(status_code=500, detail=r["stderr"] or r["stdout"])
+
+    snapshots = []
+    for line in r["stdout"].splitlines():
+        line = line.strip()
+        # Lines like: "  1    2025-01-15 10:30:00  /dev/nvme0n1p2  btrfs  @"
+        m = re.match(
+            r"^\s*(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+\s+(.+)$",
+            line,
+        )
+        if m:
+            snapshots.append({
+                "id": int(m.group(1)),
+                "date": m.group(2).strip(),
+                "name": m.group(3).strip(),
+            })
+    return {"snapshots": snapshots}
+
+
+@app.post("/api/timeshift/create")
+async def timeshift_create(req: Request):
+    """Build the command to create a Timeshift snapshot (sent to terminal)."""
+    data = await req.json()
+    comment = (data.get("comment") or "").strip()
+    excludes_raw = (data.get("excludes") or "").strip()
+
+    # Build the full command string to send to terminal.
+    exclude_args = ""
+    if excludes_raw:
+        for line in excludes_raw.splitlines():
+            p = line.strip()
+            if p:
+                exclude_args += f" --exclude '{p}'"
+
+    cmd = f"sudo timeshift --create --yes --comments '{comment}'{exclude_args}"
+
+    return {"success": True, "cmd": cmd, "message": f"スナップショットを作成します: {comment or '(コメントなし)'}"}
+
+
+@app.post("/api/timeshift/restore")
+async def timeshift_restore(req: Request):
+    """Build the command to restore a Timeshift snapshot (sent to terminal)."""
+    data = await req.json()
+    snapshot_id = data.get("snapshot_id")
+    if snapshot_id is None:
+        raise HTTPException(status_code=400, detail="snapshot_id is required")
+
+    # Validate snapshot_id is a positive integer
+    try:
+        snapshot_id = int(snapshot_id)
+        if snapshot_id < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid snapshot_id")
+
+    snapshots_resp = await timeshift_snapshots()
+    snapshots = snapshots_resp["snapshots"]
+    target = next((s for s in snapshots if s["id"] == snapshot_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"スナップショット {snapshot_id} が見つかりません")
+
+    cmd = f"sudo timeshift --restore --snapshot-device '{target['name']}' --yes"
+    return {"success": True, "cmd": cmd, "message": f"スナップショット {snapshot_id} ({target['date']}) を復元します"}
 
 
 @app.post("/api/servui/restart")

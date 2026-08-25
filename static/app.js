@@ -39,6 +39,8 @@ function switchTab(tab) {
     loadGrub();
   } else if (tab === 'backup') {
     loadBackupPage();
+  } else if (tab === 'timeshift') {
+    loadTimeshiftPage();
   } else if (tab === 'fleet') {
     loadFleetPage();
   }
@@ -2422,6 +2424,125 @@ async function runRestore() {
   if (!confirm(`復元を開始しますか？\n\n復元元パーティション: ${device}\nバックアップイメージ: ${image}\n\n⚠️ 現在のシステムは選択したバックアップの内容で上書きされます\n⚠️ 実行すると自動的に再起動し、Clonezilla Live が復元を行います\n⚠️ 処理中に電源を切らないでください`)) return;
   showBackupStatus(`${cmdData.message} で復元を開始します...`, 'info');
   await sendToTerminal(cmdData.cmd, `${cmdData.message} で復元を開始します（自動的に再起動します）`);
+}
+
+// --- Timeshift ---
+let timeshiftStatusData = null;
+
+async function loadTimeshiftPage() {
+  loadTimeshiftStatus();
+  loadTimeshiftSnapshots();
+}
+
+async function loadTimeshiftStatus() {
+  const envEl = document.getElementById('timeshift-env-status');
+  const installBtn = document.getElementById('btn-timeshift-install');
+  const createBtn = document.getElementById('btn-timeshift-create');
+  const refreshBtn = document.getElementById('btn-timeshift-refresh');
+  try {
+    const resp = await fetch('/api/timeshift/status');
+    timeshiftStatusData = await resp.json();
+    if (timeshiftStatusData.installed) {
+      const modeLabel = timeshiftStatusData.mode === 'btrfs' ? 'btrfs モード' : timeshiftStatusData.mode === 'rsync' ? 'rsync モード' : '不明';
+      envEl.innerHTML = `<span class="text-success">✔ インストール済み</span> <span class="muted">(${escapeHtml(modeLabel)})</span>`;
+      installBtn.style.display = 'none';
+      createBtn.disabled = false;
+      refreshBtn.disabled = false;
+    } else {
+      envEl.innerHTML = `<span class="text-danger">未インストール</span>`;
+      installBtn.disabled = false;
+      installBtn.style.display = '';
+      createBtn.disabled = true;
+      refreshBtn.disabled = true;
+    }
+  } catch (e) {
+    envEl.innerHTML = `<span class="text-danger">状態の取得に失敗しました: ${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function installTimeshift() {
+  const btn = document.getElementById('btn-timeshift-install');
+  if (!confirm('Timeshift のインストールを開始しますか？')) return;
+  btn.disabled = true;
+  const cmd = 'sudo apt update && sudo apt install -y timeshift';
+  await sendToTerminal(cmd, 'Timeshift をインストール中...');
+}
+
+async function loadTimeshiftSnapshots() {
+  const listEl = document.getElementById('timeshift-snapshot-list');
+  listEl.innerHTML = '<p class="muted"><span class="spinner"></span> 読み込み中...</p>';
+  try {
+    const resp = await fetch('/api/timeshift/snapshots');
+    const data = await resp.json();
+    const snaps = data.snapshots || [];
+    if (snaps.length === 0) {
+      listEl.innerHTML = '<p class="muted">スナップショットはありません。</p>';
+      return;
+    }
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:0.9rem;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);text-align:left;">';
+    html += '<th style="padding:0.5rem;">ID</th><th style="padding:0.5rem;">日時</th><th style="padding:0.5rem;">名前</th><th style="padding:0.5rem;"></th></tr></thead><tbody>';
+    for (const s of snaps) {
+      html += `<tr style="border-bottom:1px solid var(--border);">`;
+      html += `<td style="padding:0.5rem;">${escapeHtml(String(s.id))}</td>`;
+      html += `<td style="padding:0.5rem;">${escapeHtml(s.date)}</td>`;
+      html += `<td style="padding:0.5rem;font-family:monospace;font-size:0.85rem;">${escapeHtml(s.name)}</td>`;
+      html += `<td style="padding:0.5rem;"><button class="btn btn-danger" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.date)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button></td>`;
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    listEl.innerHTML = html;
+  } catch (e) {
+    listEl.innerHTML = `<p class="text-danger">一覧の取得に失敗しました: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function createSnapshot() {
+  const comment = document.getElementById('timeshift-comment').value.trim();
+  const excludes = document.getElementById('timeshift-excludes').value.trim();
+  if (!confirm('スナップショットを作成しますか？')) return;
+  try {
+    const resp = await fetch('/api/timeshift/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ comment, excludes }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      showTimeshiftStatus('スナップショット作成コマンドの生成に失敗しました', 'error');
+      return;
+    }
+    await sendToTerminal(data.cmd, data.message);
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+async function restoreSnapshot(id, date) {
+  if (!confirm(`スナップショット ${id} (${date}) を復元しますか？\n\n⚠️ 現在のシステムは選択したスナップショットの状態に戻ります\n⚠️ 実行すると自動的に再起動します`)) return;
+  try {
+    const resp = await fetch('/api/timeshift/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot_id: id }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      showTimeshiftStatus('復元コマンドの生成に失敗しました', 'error');
+      return;
+    }
+    await sendToTerminal(data.cmd, data.message);
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+  }
+}
+
+function showTimeshiftStatus(msg, type) {
+  const el = document.getElementById('timeshift-status-msg');
+  el.textContent = msg;
+  el.className = `status-msg show ${type}`;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = 'status-msg'; }, 6000);
 }
 
 // --- serv-UI Fleet (一括管理) ---
