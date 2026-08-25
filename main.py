@@ -6,6 +6,7 @@ A lightweight alternative to Webmin, designed to work with Tailscale serve.
 
 import asyncio
 import fcntl
+import glob
 import json
 import os
 import pty
@@ -34,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.3")
+app = FastAPI(title="serv-UI", version="1.4.4")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2070,6 +2071,39 @@ async def timeshift_install():
     }
 
 
+def _get_timeshift_snapshot_size(name: str) -> str:
+    """Return formatted size string for a Timeshift snapshot."""
+    paths = [
+        f"/timeshift/snapshots/{name}/rsync-log",
+        f"/timeshift/snapshots-ondemand/{name}/rsync-log",
+        f"/timeshift/snapshots-boot/{name}/rsync-log",
+        f"/timeshift/snapshots-daily/{name}/rsync-log",
+        f"/timeshift/snapshots-hourly/{name}/rsync-log",
+        f"/timeshift/snapshots-weekly/{name}/rsync-log",
+        f"/timeshift/snapshots-monthly/{name}/rsync-log",
+    ]
+    paths.extend(glob.glob(f"/run/timeshift/*/backup/timeshift/snapshots/{name}/rsync-log"))
+    for p in paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "rb") as f:
+                    f.seek(max(0, f.seek(0, 2) - 4096))
+                    content = f.read().decode("utf-8", errors="replace")
+                m = re.search(r"Total file size:\s*([\d,]+)\s*bytes", content)
+                if not m:
+                    m = re.search(r"total size is\s*([\d,]+)", content)
+                if m:
+                    b = float(int(m.group(1).replace(",", "")))
+                    for unit in ["B", "KB", "MB", "GB", "TB"]:
+                        if b < 1024:
+                            return f"{b:.1f} {unit}" if unit != "B" else f"{int(b)} B"
+                        b /= 1024
+                    return f"{b:.1f} PB"
+            except Exception:
+                pass
+    return "-"
+
+
 @app.get("/api/timeshift/snapshots")
 async def timeshift_snapshots():
     """List existing Timeshift snapshots."""
@@ -2081,11 +2115,13 @@ async def timeshift_snapshots():
     for line in r["stdout"].splitlines():
         m = re.match(r"^\s*(\d+)\s+>\s+(\S+)\s+(\S+)\s*(.*)", line)
         if m:
+            s_name = m.group(2).strip()
             snapshots.append({
                 "id": int(m.group(1)),
-                "name": m.group(2).strip(),
+                "name": s_name,
                 "tags": m.group(3).strip(),
                 "description": m.group(4).strip(),
+                "size": _get_timeshift_snapshot_size(s_name),
             })
 
     # Read the currently configured exclude list from the Timeshift config.

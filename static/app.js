@@ -2533,14 +2533,15 @@ async function loadTimeshiftSnapshots() {
     }
     let html = '<table style="width:100%;border-collapse:collapse;font-size:0.9rem;">';
     html += '<thead><tr style="border-bottom:1px solid var(--border);text-align:left;">';
-    html += '<th style="padding:0.5rem;">ID</th><th style="padding:0.5rem;">名前</th><th style="padding:0.5rem;">タグ</th><th style="padding:0.5rem;">説明</th><th style="padding:0.5rem;"></th></tr></thead><tbody>';
+    html += '<th style="padding:0.5rem;">ID</th><th style="padding:0.5rem;">名前</th><th style="padding:0.5rem;">タグ</th><th style="padding:0.5rem;">説明</th><th style="padding:0.5rem;">容量</th><th style="padding:0.5rem;"></th></tr></thead><tbody>';
     for (const s of snaps) {
       html += `<tr style="border-bottom:1px solid var(--border);">`;
       html += `<td style="padding:0.5rem;">${escapeHtml(String(s.id))}</td>`;
       html += `<td style="padding:0.5rem;font-family:monospace;font-size:0.85rem;">${escapeHtml(s.name)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.tags)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.description)}</td>`;
-      html += `<td style="padding:0.5rem;"><button class="btn btn-danger" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button> <button class="btn btn-danger" onclick="deleteSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">削除</button></td>`;
+      html += `<td style="padding:0.5rem;white-space:nowrap;font-size:0.85rem;">${escapeHtml(s.size || '-')}</td>`;
+      html += `<td style="padding:0.5rem;"><button class="btn btn-primary" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button> <button class="btn btn-danger" onclick="deleteSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">削除</button></td>`;
       html += '</tr>';
     }
     html += '</tbody></table>';
