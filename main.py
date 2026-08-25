@@ -2140,6 +2140,21 @@ async def timeshift_snapshots():
         if not default_excludes:
             default_excludes = ["/home/user/**"]
         default_excludes.append("/root/**")
+        # Exclude mount points of non-root partitions (e.g. /iso, /mnt/data).
+        try:
+            root_src = subprocess.check_output(
+                "findmnt -n -o SOURCE /", shell=True, text=True, timeout=5
+            ).strip()
+            for line in subprocess.check_output(
+                "findmnt -n -o SOURCE,TARGET", shell=True, text=True, timeout=5
+            ).splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] != root_src and parts[0].startswith("/dev/"):
+                    mp = parts[1].rstrip("/")
+                    if mp and mp != "/":
+                        default_excludes.append(f"{mp}/**")
+        except Exception:
+            pass
         if not has_config or (len(excludes) == 0 and cfg.get("do_first_run") == "true"):
             excludes = default_excludes
 
@@ -2173,7 +2188,7 @@ async def timeshift_create(req: Request):
 
     script_body = (
         "#!/usr/bin/env python3\n"
-        "import json, os, subprocess, re, glob\n"
+        "import json, os, subprocess\n"
         "c = '/etc/timeshift/timeshift.json'\n"
         "d = {}\n"
         "if os.path.isfile(c):\n"
@@ -2194,14 +2209,8 @@ async def timeshift_create(req: Request):
         "d.setdefault('exclude-apps', [])\n"
         "if 'backup_device_uuid' not in d:\n"
         "    try:\n"
-        "        root = subprocess.check_output('findmnt -n -o SOURCE /', shell=True, text=True).strip()\n"
-        "        disk = re.sub(r'p?\\d+$', '', root)\n"
-        "        for p in glob.glob(disk + '*'):\n"
-        "            if p == root or not os.path.exists(p): continue\n"
-        "            ft = subprocess.check_output(f'lsblk -lnpo FSTYPE {{p}}', shell=True, text=True).strip()\n"
-        "            if ft in ('vfat', ''): continue\n"
-        "            u = subprocess.check_output(f'blkid -s UUID -o value {{p}}', shell=True, text=True).strip()\n"
-        "            if u: d['backup_device_uuid'] = u; break\n"
+        "        d['backup_device_uuid'] = subprocess.check_output(\n"
+        "            'findmnt -n -o UUID /', shell=True, text=True).strip()\n"
         "    except Exception: pass\n"
         "with open(c, 'w') as _f: json.dump(d, _f, indent=2)\n"
     )
