@@ -2478,6 +2478,10 @@ async function loadTimeshiftSnapshots() {
     const snaps = data.snapshots || [];
     const excludes = data.excludes || [];
     const excludesLabel = excludes.length > 0 ? excludes.join(', ') : 'なし';
+    const excludesEl = document.getElementById('timeshift-current-excludes');
+    if (excludesEl) {
+      excludesEl.textContent = excludes.length > 0 ? excludes.join('\n') : 'なし';
+    }
     if (snaps.length === 0) {
       listEl.innerHTML = '<p class="muted">スナップショットはありません。</p>';
       return;

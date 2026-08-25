@@ -2140,18 +2140,14 @@ async def timeshift_create(req: Request):
         "json.dump(d, open(c, 'w'), indent=2)\n"
     )
 
-    # Step 1: Write the Python helper script via subprocess (no shell quoting).
-    wr = await asyncio.create_subprocess_exec(
-        "tee", "/tmp/ts_update.py",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await wr.communicate(input=script_body.encode())
-    if wr.returncode != 0:
-        return {"success": False, "message": "ヘルパースクリプトの書き出しに失敗しました"}
+    # Write the helper script directly (no shell, no subprocess).
+    try:
+        with open("/tmp/ts_update.py", "w") as f:
+            f.write(script_body)
+    except OSError as e:
+        return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
 
-    # Step 2: Execute the helper + timeshift --create via shell.
+    # Execute the helper + timeshift --create in a detached background process.
     cmd = f"sudo python3 /tmp/ts_update.py && sudo timeshift --create --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
