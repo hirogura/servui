@@ -2314,14 +2314,20 @@ function showBackupStatus(msg, type) {
 
 async function sendToTerminal(cmd, infoMsg) {
   switchTab('terminal');
-  showStatus(infoMsg, 'info');
-  setTimeout(() => {
+  if (infoMsg) showStatus(infoMsg, 'info');
+  const startTime = Date.now();
+  const trySend = () => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data: cmd + '\n' }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: 'input', data: cmd + '\n' }));
+      }, 300);
+    } else if (Date.now() - startTime < 8000) {
+      setTimeout(trySend, 150);
     } else {
-      showStatus('ターミナルに接続できません', 'error');
+      showStatus('ターミナルに接続できませんでした', 'error');
     }
-  }, 500);
+  };
+  trySend();
 }
 
 async function installClonezilla() {
@@ -2428,6 +2434,7 @@ async function runRestore() {
 
 // --- Timeshift ---
 let timeshiftStatusData = null;
+let timeshiftExcludes = [];
 
 async function loadTimeshiftPage() {
   loadTimeshiftStatus();
@@ -2469,6 +2476,46 @@ async function installTimeshift() {
   await sendToTerminal(cmd, 'Timeshift をインストール中...');
 }
 
+function renderTimeshiftExcludes() {
+  const container = document.getElementById('timeshift-exclude-list');
+  if (!container) return;
+  if (!timeshiftExcludes || timeshiftExcludes.length === 0) {
+    container.innerHTML = '<p class="muted" style="font-size:0.85rem;margin:0.25rem 0;">除外フォルダはありません（すべてのファイルが対象）</p>';
+    return;
+  }
+  let html = '<div style="display:flex;flex-direction:column;gap:0.35rem;">';
+  timeshiftExcludes.forEach((path, idx) => {
+    html += `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;background:var(--bg-elevated, #1f2128);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.55rem;font-family:monospace;font-size:0.83rem;">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(path)}">${escapeHtml(path)}</span>
+        <button type="button" class="btn btn-danger btn-sm" onclick="removeTimeshiftExclude(${idx})" title="除外を解除" style="padding:0.1rem 0.45rem;font-size:0.85rem;line-height:1.2;flex-shrink:0;">－</button>
+      </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function addTimeshiftExclude() {
+  const input = document.getElementById('timeshift-new-exclude');
+  if (!input) return;
+  const path = input.value.trim();
+  if (!path) return;
+  if (timeshiftExcludes.includes(path)) {
+    showTimeshiftStatus('そのパスは既に除外リストに含まれています', 'error');
+    return;
+  }
+  timeshiftExcludes.push(path);
+  input.value = '';
+  renderTimeshiftExcludes();
+}
+
+function removeTimeshiftExclude(idx) {
+  if (idx >= 0 && idx < timeshiftExcludes.length) {
+    timeshiftExcludes.splice(idx, 1);
+    renderTimeshiftExcludes();
+  }
+}
+
 async function loadTimeshiftSnapshots() {
   const listEl = document.getElementById('timeshift-snapshot-list');
   listEl.innerHTML = '<p class="muted"><span class="spinner"></span> 読み込み中...</p>';
@@ -2476,10 +2523,9 @@ async function loadTimeshiftSnapshots() {
     const resp = await fetch('/api/timeshift/snapshots');
     const data = await resp.json();
     const snaps = data.snapshots || [];
-    const excludesEl = document.getElementById('timeshift-current-excludes');
-    if (excludesEl && data.excludes) {
-      const ex = data.excludes || [];
-      excludesEl.textContent = ex.length > 0 ? ex.join('\n') : 'なし';
+    if (data.excludes) {
+      timeshiftExcludes = [...data.excludes];
+      renderTimeshiftExcludes();
     }
     if (snaps.length === 0) {
       listEl.innerHTML = '<p class="muted">スナップショットはありません。</p>';
@@ -2506,13 +2552,12 @@ async function loadTimeshiftSnapshots() {
 
 async function createSnapshot() {
   const comment = document.getElementById('timeshift-comment').value.trim();
-  const excludes = document.getElementById('timeshift-excludes').value.trim();
   if (!confirm('スナップショットを作成しますか？')) return;
   try {
     const resp = await fetch('/api/timeshift/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ comment, excludes }),
+      body: JSON.stringify({ comment, excludes: timeshiftExcludes }),
     });
     const data = await resp.json();
     if (!data.success) {

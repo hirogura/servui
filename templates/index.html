@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.2</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.3</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -647,12 +647,21 @@
           <input type="text" id="timeshift-comment" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);" placeholder="例: インストール後のクリーン状態">
         </div>
         <div class="form-group">
-          <label for="timeshift-excludes">除外フォルダ（1行に1つ、任意）</label>
-          <div style="display:flex;gap:0.75rem;align-items:flex-start;flex-wrap:wrap;">
-            <textarea id="timeshift-excludes" rows="4" style="flex:1;min-width:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);resize:vertical;font-family:monospace;font-size:0.85rem;" placeholder="/home/user/Downloads&#10;/var/cache&#10;/tmp"></textarea>
-            <div style="flex:1;min-width:200px;">
-              <p class="muted" style="margin:0 0 0.3rem;font-size:0.8rem;">現在の設定:</p>
-              <div id="timeshift-current-excludes" style="padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);font-family:monospace;font-size:0.85rem;min-height:2.5rem;color:var(--text);">読み込み中...</div>
+          <label>除外フォルダ</label>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:1rem;align-items:start;">
+            <div>
+              <p class="muted" style="margin:0 0 0.4rem;font-size:0.8rem;">設定中の除外フォルダ一覧:</p>
+              <div id="timeshift-exclude-list" style="max-height:180px;overflow-y:auto;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);min-height:3.5rem;">
+                <p class="muted" style="font-size:0.85rem;margin:0;">読み込み中...</p>
+              </div>
+            </div>
+            <div>
+              <p class="muted" style="margin:0 0 0.4rem;font-size:0.8rem;">除外パスの追加:</p>
+              <div style="display:flex;gap:0.5rem;align-items:center;">
+                <input type="text" id="timeshift-new-exclude" style="flex:1;min-width:0;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-family:monospace;font-size:0.85rem;" placeholder="/home/user/Downloads/**" onkeydown="if(event.key==='Enter'){event.preventDefault();addTimeshiftExclude();}">
+                <button type="button" class="btn btn-primary" id="btn-timeshift-add-exclude" onclick="addTimeshiftExclude()" style="white-space:nowrap;padding:0.5rem 0.9rem;font-size:0.85rem;">追加</button>
+              </div>
+              <p class="muted" style="margin:0.4rem 0 0;font-size:0.75rem;">※ 「/パス/**」のように指定するとフォルダ配下全体が除外されます</p>
             </div>
           </div>
         </div>

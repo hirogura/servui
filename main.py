@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.2")
+app = FastAPI(title="serv-UI", version="1.4.3")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2090,12 +2090,29 @@ async def timeshift_snapshots():
 
     # Read the currently configured exclude list from the Timeshift config.
     excludes: list[str] = []
+    has_config = False
+    cfg = {}
     try:
         with open("/etc/timeshift/timeshift.json", encoding="utf-8") as f:
             cfg = json.load(f)
-        excludes = cfg.get("exclude", [])
+            has_config = True
+            excludes = cfg.get("exclude", [])
     except (OSError, json.JSONDecodeError):
         pass
+
+    if not has_config or not excludes:
+        default_excludes = []
+        try:
+            for u in os.listdir("/home"):
+                if os.path.isdir(os.path.join("/home", u)) and not u.startswith("."):
+                    default_excludes.append(f"/home/{u}/**")
+        except OSError:
+            pass
+        if not default_excludes:
+            default_excludes = ["/home/user/**"]
+        default_excludes.append("/root/**")
+        if not has_config or (len(excludes) == 0 and cfg.get("do_first_run") == "true"):
+            excludes = default_excludes
 
     return {"snapshots": snapshots, "excludes": excludes}
 
@@ -2113,10 +2130,12 @@ async def timeshift_create(req: Request):
 
     data = await req.json()
     comment = (data.get("comment") or "").strip()
-    excludes_raw = (data.get("excludes") or "").strip()
+    excludes_raw = data.get("excludes")
 
     excludes: list[str] = []
-    if excludes_raw:
+    if isinstance(excludes_raw, list):
+        excludes = [str(x).strip() for x in excludes_raw if str(x).strip()]
+    elif isinstance(excludes_raw, str) and excludes_raw.strip():
         excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
 
     exclude_json = json.dumps(excludes)
@@ -2129,6 +2148,7 @@ async def timeshift_create(req: Request):
         "c = '/etc/timeshift/timeshift.json'\n"
         "d = {} if not os.path.isfile(c) else json.load(open(c))\n"
         f"d['exclude'] = {exclude_json}\n"
+        "d['do_first_run'] = 'false'\n"
         "d.setdefault('btrfs_mode', 'false')\n"
         "d.setdefault('schedule_monthly', 'false')\n"
         "d.setdefault('schedule_weekly', 'false')\n"
@@ -2208,10 +2228,10 @@ async def timeshift_restore(req: Request):
     if snapshot_id is None:
         raise HTTPException(status_code=400, detail="snapshot_id is required")
 
-    # Validate snapshot_id is a positive integer
+    # Validate snapshot_id is a non-negative integer
     try:
         snapshot_id = int(snapshot_id)
-        if snapshot_id < 1:
+        if snapshot_id < 0:
             raise ValueError
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="invalid snapshot_id")
@@ -2222,7 +2242,13 @@ async def timeshift_restore(req: Request):
     if target is None:
         raise HTTPException(status_code=404, detail=f"スナップショット {snapshot_id} が見つかりません")
 
-    cmd = f"sudo timeshift --restore --snapshot '{target['name']}' --yes"
+    root_dev = ""
+    r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
+    if r["returncode"] == 0 and r["stdout"].strip():
+        root_dev = r["stdout"].strip()
+
+    target_arg = f" --target '{root_dev}'" if root_dev else ""
+    cmd = f"sudo timeshift --restore --snapshot '{target['name']}'{target_arg} --skip-grub --scripted --yes"
     return {"success": True, "cmd": cmd, "message": f"スナップショット {snapshot_id} ({target['name']}) を復元します"}
 
 
@@ -2236,7 +2262,7 @@ async def timeshift_delete(req: Request):
 
     try:
         snapshot_id = int(snapshot_id)
-        if snapshot_id < 1:
+        if snapshot_id < 0:
             raise ValueError
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="invalid snapshot_id")
