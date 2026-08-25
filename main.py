@@ -2061,35 +2061,43 @@ async def timeshift_create(req: Request):
     if excludes_raw:
         excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
 
-    # Build a shell snippet that:
-    #   1. Updates the exclude array in /etc/timeshift/timeshift.json via python3
-    #   2. Runs timeshift --create
+    # Write a helper script via heredoc (avoids all shell-quoting issues),
+    # then run it to update the config, and finally create the snapshot.
     exclude_json = json.dumps(excludes)
-    update_cfg = (
-        f"python3 -c \""
-        f"import json,os; "
-        f"c='/etc/timeshift/timeshift.json'; "
-        f"d={{}} if not os.path.isfile(c) else json.load(open(c)); "
-        f"d['exclude']={exclude_json}; "
-        f"d.setdefault('btrfs_mode','false'); "
-        f"d.setdefault('schedule_monthly','false'); "
-        f"d.setdefault('schedule_weekly','false'); "
-        f"d.setdefault('schedule_daily','false'); "
-        f"d.setdefault('schedule_hourly','false'); "
-        f"d.setdefault('schedule_boot','false'); "
-        f"d.setdefault('count_monthly','2'); "
-        f"d.setdefault('count_weekly','3'); "
-        f"d.setdefault('count_daily','5'); "
-        f"d.setdefault('count_hourly','6'); "
-        f"d.setdefault('count_boot','5'); "
-        f"d.setdefault('exclude-apps',[]); "
-        f"json.dump(d,open(c,'w'),indent=2)\""
+    safe_comment = comment.replace("'", "'\\''") if comment else ""
+    comment_arg = f" --comments '{safe_comment}'" if comment else ""
+
+    script_body = (
+        "#!/usr/bin/env python3\n"
+        "import json, os\n"
+        "c = '/etc/timeshift/timeshift.json'\n"
+        "d = {} if not os.path.isfile(c) else json.load(open(c))\n"
+        f"d['exclude'] = {exclude_json}\n"
+        "d.setdefault('btrfs_mode', 'false')\n"
+        "d.setdefault('schedule_monthly', 'false')\n"
+        "d.setdefault('schedule_weekly', 'false')\n"
+        "d.setdefault('schedule_daily', 'false')\n"
+        "d.setdefault('schedule_hourly', 'false')\n"
+        "d.setdefault('schedule_boot', 'false')\n"
+        "d.setdefault('count_monthly', '2')\n"
+        "d.setdefault('count_weekly', '3')\n"
+        "d.setdefault('count_daily', '5')\n"
+        "d.setdefault('count_hourly', '6')\n"
+        "d.setdefault('count_boot', '5')\n"
+        "d.setdefault('exclude-apps', [])\n"
+        "json.dump(d, open(c, 'w'), indent=2)\n"
     )
 
-    parts = [f"sudo sh -c '{update_cfg}'"]
-    comment_arg = f" --comments '{comment}'" if comment else ""
-    parts.append(f"sudo timeshift --create --yes{comment_arg}")
-    cmd = " && ".join(parts)
+    # Use a quoted heredoc (<<'EOF') so the shell does NOT expand anything
+    # inside the script body.  The full command is sent to the terminal as
+    # a single string with embedded newlines; xterm.js / the PTY processes
+    # it identically to manual line-by-line input.
+    cmd = (
+        "cat > /tmp/ts_update.py << 'TSEOF'\n"
+        f"{script_body}"
+        "TSEOF\n"
+        f"sudo python3 /tmp/ts_update.py && sudo timeshift --create --yes{comment_arg}"
+    )
 
     label = comment or "(コメントなし)"
     return {"success": True, "cmd": cmd, "message": f"スナップショットを作成します: {label}"}
