@@ -2186,15 +2186,21 @@ async def timeshift_create(req: Request):
     safe_comment = comment.replace("'", "'\\''") if comment else ""
     comment_arg = f" --comments '{safe_comment}'" if comment else ""
 
+    # Detect root device for config and stdin fallback.
+    r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
+    root_dev = r["stdout"].strip() if r["returncode"] == 0 else ""
+    r_uuid = await run_cmd("findmnt -n -o UUID /", timeout=5)
+    root_uuid = r_uuid["stdout"].strip() if r_uuid["returncode"] == 0 else ""
+
     script_body = (
         "#!/usr/bin/env python3\n"
-        "import json, os, subprocess\n"
+        "import json, os\n"
         "c = '/etc/timeshift/timeshift.json'\n"
         "d = {}\n"
         "if os.path.isfile(c):\n"
         "    with open(c) as _f: d = json.load(_f)\n"
         f"d['exclude'] = {exclude_json}\n"
-        "if os.path.isfile(c): d['do_first_run'] = 'false'\n"
+        "d['do_first_run'] = 'false'\n"
         "d.setdefault('btrfs_mode', 'false')\n"
         "d.setdefault('schedule_monthly', 'false')\n"
         "d.setdefault('schedule_weekly', 'false')\n"
@@ -2207,11 +2213,7 @@ async def timeshift_create(req: Request):
         "d.setdefault('count_hourly', '6')\n"
         "d.setdefault('count_boot', '5')\n"
         "d.setdefault('exclude-apps', [])\n"
-        "if 'backup_device_uuid' not in d:\n"
-        "    try:\n"
-        "        d['backup_device_uuid'] = subprocess.check_output(\n"
-        "            'findmnt -n -o UUID /', shell=True, text=True).strip()\n"
-        "    except Exception: pass\n"
+        f"d['backup_device_uuid'] = '{root_uuid}'\n"
         "with open(c, 'w') as _f: json.dump(d, _f, indent=2)\n"
     )
 
@@ -2223,8 +2225,10 @@ async def timeshift_create(req: Request):
     except OSError as e:
         return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
 
-    # Execute the helper + timeshift --create in a detached background process.
-    cmd = f"sudo python3 {ts_script} && sudo timeshift --create --yes{comment_arg}"
+    # Pipe device name to stdin as fallback for the backup-device prompt
+    # (--yes only answers y/n questions, not the numbered device selector).
+    stdin_arg = f"echo '{root_dev}' |" if root_dev else ""
+    cmd = f"sudo python3 {ts_script} && {stdin_arg} sudo timeshift --create --yes{comment_arg}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
