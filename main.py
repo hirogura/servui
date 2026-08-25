@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.6")
+app = FastAPI(title="serv-UI", version="1.4.7")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -1993,48 +1993,6 @@ async def backup_cmd(req: Request):
 # Timeshift
 # ---------------------------------------------------------------------------
 
-_ts_create_state: dict = {
-    "running": False, "success": None, "log": "",
-}
-_ts_create_lock = asyncio.Lock()
-_ts_create_proc: asyncio.subprocess.Process | None = None
-
-
-def _reset_ts_create_state(**kw) -> None:
-    _ts_create_state.clear()
-    _ts_create_state.update({
-        "running": False, "success": None, "log": "",
-    }, **kw)
-
-
-async def _timeshift_create_worker(script_path: str) -> None:
-    """Wait for the timeshift subprocess to finish and update state."""
-    global _ts_create_proc
-    async with _ts_create_lock:
-        proc = _ts_create_proc
-    if proc is None:
-        return
-    try:
-        stdout, _ = await proc.communicate()
-        rc = proc.returncode
-        log = (stdout or b"").decode("utf-8", errors="replace")[-4000:]
-        async with _ts_create_lock:
-            _ts_create_state["success"] = rc == 0
-            _ts_create_state["log"] = log
-            _ts_create_state["running"] = False
-    except Exception as e:
-        async with _ts_create_lock:
-            _ts_create_state["success"] = False
-            _ts_create_state["log"] = str(e)
-            _ts_create_state["running"] = False
-    finally:
-        _ts_create_proc = None
-        try:
-            os.unlink(script_path)
-        except OSError:
-            pass
-
-
 @app.get("/api/timeshift/status")
 async def timeshift_status():
     """Check whether Timeshift is installed and detect its mode (rsync/btrfs)."""
@@ -2197,15 +2155,11 @@ async def timeshift_save_excludes(req: Request):
 
 @app.post("/api/timeshift/create")
 async def timeshift_create(req: Request):
-    """Start creating a Timeshift snapshot in the background.
+    """Build the command to create a Timeshift snapshot (sent to terminal).
 
     The exclude paths are written into /etc/timeshift/timeshift.json first
     because the Timeshift CLI does not accept ``--exclude`` flags.
     """
-    async with _ts_create_lock:
-        if _ts_create_state["running"]:
-            return {"success": False, "message": "スナップショット作成が既に実行中です"}
-
     data = await req.json()
     comment = (data.get("comment") or "").strip()
     excludes_raw = data.get("excludes")
@@ -2263,50 +2217,9 @@ async def timeshift_create(req: Request):
     # (--yes only answers y/n questions, not the numbered device selector).
     stdin_arg = f"echo '{root_dev}' |" if root_dev else ""
     cmd = f"sudo python3 {ts_script} && {stdin_arg} sudo timeshift --create --yes{comment_arg}"
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-    )
-    global _ts_create_proc
-    async with _ts_create_lock:
-        _ts_create_proc = proc
-        _reset_ts_create_state(running=True)
-
-    asyncio.create_task(_timeshift_create_worker(ts_script))
 
     label = comment or "(コメントなし)"
-    return {"success": True, "message": f"スナップショットを作成中: {label}"}
-
-
-@app.get("/api/timeshift/create/status")
-async def timeshift_create_status():
-    """Return current state of the background snapshot creation."""
-    st = dict(_ts_create_state)
-    return st
-
-
-@app.post("/api/timeshift/create/cancel")
-async def timeshift_create_cancel():
-    """Cancel a running snapshot creation."""
-    async with _ts_create_lock:
-        if not _ts_create_state["running"]:
-            return {"success": False, "message": "実行中の作成はありません"}
-        proc = _ts_create_proc
-    if proc is not None and proc.returncode is None:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-    async with _ts_create_lock:
-        _ts_create_state["log"] = "キャンセルしました"
-        _ts_create_state["running"] = False
-        _ts_create_state["success"] = False
-    return {"success": True, "message": "キャンセルしています..."}
+    return {"success": True, "cmd": cmd, "message": f"スナップショットを作成中: {label}"}
 
 
 @app.post("/api/timeshift/restore")

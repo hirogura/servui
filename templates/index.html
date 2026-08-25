@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.6</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.7</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -661,6 +661,12 @@
                 <input type="text" id="timeshift-new-exclude" style="flex:1;min-width:0;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-family:monospace;font-size:0.85rem;" placeholder="/home/user/Downloads/**" onkeydown="if(event.key==='Enter'){event.preventDefault();addTimeshiftExclude();}">
                 <button type="button" class="btn btn-primary" id="btn-timeshift-add-exclude" onclick="addTimeshiftExclude()" style="white-space:nowrap;padding:0.5rem 0.9rem;font-size:0.85rem;">追加</button>
               </div>
+              <div style="display:flex;flex-wrap:wrap;gap:0.35rem;margin-top:0.5rem;align-items:center;">
+                <span class="muted" style="font-size:0.75rem;">テンプレート:</span>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/opt/lxd-pool/**')" title="LXD コンテナのストレージを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/opt/lxd-pool/**</button>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/vm')" title="仮想マシンのディスクイメージを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/vm</button>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/root/.cache/**')" title="root のキャッシュを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/root/.cache/**</button>
+              </div>
               <p class="muted" style="margin:0.4rem 0 0;font-size:0.75rem;">※ 「/パス/**」のように指定するとフォルダ配下全体が除外されます</p>
             </div>
           </div>
@@ -672,17 +678,7 @@
           <button class="btn btn-success" id="btn-timeshift-create" onclick="createSnapshot()" disabled>
             スナップショット作成
           </button>
-          <button class="btn btn-danger" id="btn-timeshift-create-cancel" onclick="cancelTimeshiftCreate()" disabled>
-            キャンセル
-          </button>
         </div>
-        <div id="timeshift-create-progress" style="display:none;margin-top:0.75rem;">
-          <div style="background:var(--bg-secondary);border-radius:6px;overflow:hidden;height:6px;">
-            <div id="timeshift-create-bar" style="height:100%;width:0%;background:var(--accent);transition:width 0.5s;"></div>
-          </div>
-          <p id="timeshift-create-text" class="muted" style="margin-top:0.4rem;font-size:0.85rem;"></p>
-        </div>
-        <pre id="timeshift-create-log" style="display:none;margin-top:0.75rem;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:0.75rem;font-size:0.8rem;color:var(--text);white-space:pre-wrap;"></pre>
       </div>
 
       <h2>スナップショット一覧</h2>
@@ -747,6 +743,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=16"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>
