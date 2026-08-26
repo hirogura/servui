@@ -2143,15 +2143,16 @@ function escapeJs(str) {
 }
 
 function showStatus(msg, type) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    document.body.appendChild(container);
+  }
   const el = document.createElement('div');
   el.className = `status-msg show ${type}`;
   el.textContent = msg;
-  el.style.position = 'fixed';
-  el.style.bottom = '1rem';
-  el.style.right = '1rem';
-  el.style.zIndex = '100';
-  el.style.minWidth = '300px';
-  document.body.appendChild(el);
+  container.appendChild(el);
   setTimeout(() => el.remove(), 4000);
 }
 
@@ -2547,7 +2548,9 @@ async function saveTimeshiftExcludes() {
     });
     const data = await resp.json();
     if (data.success) {
-      showTimeshiftStatus(data.message, 'success');
+      timeshiftExcludesDirty = false;
+      showTimeshiftStatus('除外設定を保存しました', 'success');
+      loadTimeshiftSnapshots();
     } else {
       showTimeshiftStatus(data.message || '除外設定の保存に失敗しました', 'error');
     }

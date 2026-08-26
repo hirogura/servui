@@ -35,7 +35,17 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.10")
+app = FastAPI(title="serv-UI", version="1.4.11")
+
+
+@app.middleware("http")
+async def no_cache_html(request: Request, call_next):
+    """Prevent browsers from serving cached HTML (which pins stale app.js)."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2189,6 +2199,7 @@ async def timeshift_create(req: Request):
         excludes = [l.strip() for l in excludes_raw.splitlines() if l.strip()]
 
     exclude_json = json.dumps(excludes)
+    print(f"[timeshift-create] excludes from client: {exclude_json}", flush=True)
     safe_comment = comment.replace("'", "'\\''") if comment else ""
     comment_arg = f" --comments '{safe_comment}'" if comment else ""
 
