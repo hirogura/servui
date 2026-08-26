@@ -8,6 +8,7 @@ import asyncio
 import fcntl
 import glob
 import json
+import logging
 import os
 import pty
 import pwd
@@ -275,6 +276,14 @@ async def system_processes():
 @app.get("/api/ports/listen")
 async def ports_listen():
     """List listening services (ss -tulnp) and their LAN accessibility."""
+    try:
+        return await _collect_listening_ports()
+    except Exception:
+        logging.getLogger("uvicorn.error").exception("ports_listen failed")
+        return {"ips": [], "ports": []}
+
+
+async def _collect_listening_ports() -> dict:
     result = await run_cmd("ss -tulnpH 2>/dev/null", timeout=15)
 
     def classify(host: str) -> str:
@@ -285,7 +294,7 @@ async def ports_listen():
             return "local"
         return "limited"
 
-    rows: dict[tuple, dict] = {}
+    rows = {}
     for line in result["stdout"].splitlines():
         parts = line.split()
         if len(parts) < 5:
@@ -338,8 +347,9 @@ async def ports_listen():
             if iface == "lo":
                 continue
             for a in addrs:
-                if a.family.name in ("AF_INET", "AF_INET6") and not a.address.startswith("fe80"):
-                    addr = a.address.split("%")[0]
+                fam = getattr(a.family, "value", a.family)
+                if fam in (2, 10) and not str(a.address).startswith("fe80"):
+                    addr = str(a.address).split("%")[0]
                     entry = {"iface": iface, "address": addr}
                     if entry not in ips:
                         ips.append(entry)

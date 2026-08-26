@@ -243,11 +243,18 @@ async function scanPorts() {
   container.innerHTML = '<p class="muted">スキャン中...</p>';
   try {
     const resp = await fetch('/api/ports/listen');
-    const data = await resp.json();
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      container.innerHTML = `<p class="muted">サーバーエラー (${resp.status}): ${escapeHtml(text.slice(0, 200))}</p>`;
+      return;
+    }
     window._allPorts = data.ports;
     window._portIps = data.ips || [];
     renderIps(window._portIps);
-    renderPorts(data.ports);
+    renderPorts(data.ports || []);
   } catch (e) {
     container.innerHTML = `<p class="muted">エラー: ${escapeHtml(e.message)}</p>`;
   }
