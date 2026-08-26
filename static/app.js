@@ -2332,9 +2332,179 @@ async function openVMManager() {
 // --- Backup / Restore ---
 let backupStatusData = null;
 
+// --- Clonezilla ISO Download ---
+let czDlPollTimer = null;
+
+function stopCzDlPolling() {
+  if (czDlPollTimer) {
+    clearInterval(czDlPollTimer);
+    czDlPollTimer = null;
+  }
+}
+
+async function loadClonezillaVersions() {
+  const sel = document.getElementById('cz-version-select');
+  const fileBtn = document.getElementById('btn-cz-files');
+  try {
+    const resp = await fetch('/api/backup/clonezilla-versions');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    sel.innerHTML = data.versions.map(v =>
+      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)}</option>`
+    ).join('') || '<option value="">バージョンがありません</option>';
+    sel.disabled = false;
+    fileBtn.disabled = false;
+  } catch (e) {
+    sel.innerHTML = '<option value="">バージョン一覧の取得に失敗しました</option>';
+    showBackupStatus(`Clonezillaバージョン取得エラー: ${e.message}`, 'error');
+  }
+}
+
+async function loadClonezillaFiles() {
+  const version = document.getElementById('cz-version-select').value;
+  const fileSel = document.getElementById('cz-file-select');
+  const dlBtn = document.getElementById('btn-cz-dl');
+  if (!version) return;
+  fileSel.innerHTML = '<option value="">読み込み中...</option>';
+  fileSel.disabled = true;
+  dlBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/backup/clonezilla-files?version=${encodeURIComponent(version)}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    fileSel.innerHTML = data.files.map(f =>
+      `<option value="${escapeHtml(f.download_url)}" data-filename="${escapeJs(f.name)}">${escapeHtml(f.name)}</option>`
+    ).join('') || '<option value="">ISOファイルがありません</option>';
+    fileSel.disabled = false;
+    dlBtn.disabled = false;
+  } catch (e) {
+    fileSel.innerHTML = '<option value="">ファイル一覧の取得に失敗しました</option>';
+    showBackupStatus(`Clonezillaファイル取得エラー: ${e.message}`, 'error');
+  }
+}
+
+async function pollCzDownloadStatus() {
+  const statusEl = document.getElementById('cz-dl-status');
+  const progress = document.getElementById('cz-dl-progress');
+  const bar = document.getElementById('cz-dl-progress-bar');
+  const text = document.getElementById('cz-dl-progress-text');
+  const dlBtn = document.getElementById('btn-cz-dl');
+  const cancelBtn = document.getElementById('btn-cz-dl-cancel');
+  let s;
+  try {
+    const resp = await fetch('/api/grub/iso-download/status');
+    s = await resp.json();
+  } catch (e) {
+    return;
+  }
+  if (s.running) {
+    dlBtn.disabled = true;
+    cancelBtn.disabled = false;
+    progress.style.display = 'block';
+    if (s.total > 0) {
+      const pct = Math.min(100, Math.round((s.size / s.total) * 100));
+      bar.style.width = pct + '%';
+      text.textContent = `${s.filename} — ${formatBytesJS(s.size)} / ${formatBytesJS(s.total)} (${pct}%)`;
+    } else {
+      bar.style.width = '0%';
+      text.textContent = `${s.filename} — ${formatBytesJS(s.size)}`;
+    }
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> /iso にダウンロード中...';
+    return;
+  }
+  stopCzDlPolling();
+  progress.style.display = 'none';
+  cancelBtn.disabled = true;
+  if (s.success === true || s.success === false) {
+    dlBtn.disabled = false;
+    document.getElementById('cz-file-select').disabled = false;
+    document.getElementById('btn-cz-files').disabled = false;
+    if (s.success) {
+      statusEl.className = 'status-msg show success';
+      statusEl.textContent = `${s.filename} を /iso に保存しました（${formatBytesJS(s.size)}）`;
+      loadBackupStatus();
+    } else if (s.cancelled) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = 'ダウンロードをキャンセルしました';
+    } else {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `ダウンロード失敗: ${s.log || '不明なエラー'}`;
+    }
+  }
+}
+
+async function downloadClonezillaIso() {
+  const fileSel = document.getElementById('cz-file-select');
+  const statusEl = document.getElementById('cz-dl-status');
+  const dlBtn = document.getElementById('btn-cz-dl');
+  const opt = fileSel.options[fileSel.selectedIndex];
+  const url = fileSel.value;
+  const filename = opt ? opt.dataset.filename : '';
+  if (!url || !filename) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'ISOファイルを選択してください';
+    return;
+  }
+  dlBtn.disabled = true;
+  fileSel.disabled = true;
+  document.getElementById('btn-cz-files').disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> ダウンロードを開始しています...';
+  try {
+    const resp = await fetch('/api/backup/clonezilla-download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, filename }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+      dlBtn.disabled = false;
+      fileSel.disabled = false;
+      document.getElementById('btn-cz-files').disabled = false;
+      return;
+    }
+    stopCzDlPolling();
+    pollCzDownloadStatus();
+    czDlPollTimer = setInterval(pollCzDownloadStatus, 1000);
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+    dlBtn.disabled = false;
+    fileSel.disabled = false;
+    document.getElementById('btn-cz-files').disabled = false;
+  }
+}
+
+async function cancelClonezillaDownload() {
+  if (!confirm('ダウンロードをキャンセルしますか？\n保存中の部分ファイルは削除されます。')) return;
+  document.getElementById('btn-cz-dl-cancel').disabled = true;
+  try {
+    await fetch('/api/grub/iso-download/cancel', { method: 'POST' });
+  } catch (e) {}
+  pollCzDownloadStatus();
+}
+
+function syncCzDownloadStatus() {
+  fetch('/api/grub/iso-download/status')
+    .then(r => r.json())
+    .then(s => {
+      if (s.running && !czDlPollTimer) {
+        stopCzDlPolling();
+        pollCzDownloadStatus();
+        czDlPollTimer = setInterval(pollCzDownloadStatus, 1000);
+      }
+    })
+    .catch(() => {});
+}
+
 async function loadBackupPage() {
   loadBackupStatus();
   loadBackupPartitions();
+  loadClonezillaVersions();
+  syncCzDownloadStatus();
 }
 
 function setBackupControlsEnabled(enabled) {

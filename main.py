@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.6.0")
+app = FastAPI(title="serv-UI", version="1.7.0")
 
 
 @app.middleware("http")
@@ -2138,6 +2138,104 @@ async def _list_clonezilla_images(device: str) -> list[str]:
     finally:
         if tmp_dir:
             await run_cmd(f"{_sudo('umount')} {tmp_dir}; rmdir {tmp_dir}", timeout=15)
+
+
+_SF_CLONEZILLA_BASE = "https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable"
+
+
+async def _fetch_sf_listing(url: str) -> dict:
+    """Fetch a SourceForge file listing page and extract the embedded net.sf.files JSON."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "servui"})
+        resp = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=15, context=_SSL_UNVERIFIED)
+        )
+        html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SourceForgeへの接続に失敗しました: {e}")
+    m = re.search(r"net\.sf\.files\s*=\s*(\{.*?\});", html, re.S)
+    if not m:
+        raise HTTPException(status_code=502, detail="SourceForgeのページ解析に失敗しました")
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="SourceForgeのデータ解析に失敗しました")
+
+
+@app.get("/api/backup/clonezilla-versions")
+async def clonezilla_versions():
+    """List available Clonezilla stable versions from SourceForge."""
+    data = await _fetch_sf_listing(_SF_CLONEZILLA_BASE)
+    versions = []
+    for name, info in data.items():
+        if info.get("type") == "d" and re.match(r"^\d+\.\d+", name):
+            versions.append({"name": name})
+    def _ver_key(v):
+        parts = re.split(r"[.\-]", v["name"])
+        return [int(p) for p in parts if p.isdigit()]
+    versions.sort(key=_ver_key, reverse=True)
+    return {"versions": versions}
+
+
+@app.get("/api/backup/clonezilla-files")
+async def clonezilla_files(version: str):
+    """List ISO files for a given Clonezilla version."""
+    if not re.match(r"^[\d.]+-\d+$", version):
+        raise HTTPException(status_code=400, detail="不正なバージョン指定です")
+    url = f"{_SF_CLONEZILLA_BASE}/{version}/"
+    data = await _fetch_sf_listing(url)
+    files = []
+    for name, info in data.items():
+        if info.get("type") == "f" and name.lower().endswith(".iso"):
+            dl_url = f"{_SF_CLONEZILLA_BASE}/{version}/{name}/download"
+            files.append({"name": name, "download_url": dl_url})
+    files.sort(key=lambda f: f["name"])
+    return {"files": files}
+
+
+@app.post("/api/backup/clonezilla-download")
+async def clonezilla_download(req: Request):
+    """Start downloading a Clonezilla ISO from SourceForge into /iso."""
+    global _iso_dl_proc
+    data = await req.json()
+    url = (data.get("url") or "").strip()
+    filename = (data.get("filename") or "").strip()
+    if not url or not filename:
+        return {"success": False, "message": "URLとファイル名を指定してください"}
+    if not re.match(r"^https?://sourceforge\.net/", url):
+        return {"success": False, "message": "SourceForgeのURLを指定してください"}
+    if not filename.lower().endswith(".iso"):
+        return {"success": False, "message": "ISOファイルを指定してください"}
+    if any(ch in filename for ch in ('"', "'", "`", "\\", "$", ";", "&", "|", "<", ">")):
+        return {"success": False, "message": "ファイル名に使用できない文字が含まれています"}
+
+    w = await run_cmd("which wget")
+    if w["returncode"] != 0:
+        return {"success": False, "message": "wget が見つかりません"}
+
+    mnt = await run_cmd("findmnt -n --target /iso", timeout=5)
+    if mnt["returncode"] != 0:
+        return {"success": False, "message": "/iso に保存用パーティションがマウントされていません"}
+
+    dest = f"/iso/{filename}"
+    if os.path.exists(dest):
+        return {"success": False, "message": f"同名のファイルが既に存在します: {filename}"}
+
+    total = await asyncio.to_thread(_probe_content_length, url)
+
+    async with _iso_dl_lock:
+        if _iso_dl_state["running"]:
+            return {"success": False, "message": "ダウンロードが既に実行中です"}
+        proc = await asyncio.create_subprocess_shell(
+            _sudo(f"wget -q --tries=3 --timeout=60 -O {shlex.quote(dest)} {shlex.quote(url)}"),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        _iso_dl_proc = proc
+        _reset_iso_dl_state(running=True, filename=filename, path=dest, total=total)
+        asyncio.create_task(_iso_download_worker(proc, dest))
+    return {"success": True, "filename": filename}
 
 
 @app.get("/api/backup/status")
