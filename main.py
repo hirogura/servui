@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.8")
+app = FastAPI(title="serv-UI", version="1.4.9")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent

@@ -2435,9 +2435,11 @@ async function runRestore() {
 // --- Timeshift ---
 let timeshiftStatusData = null;
 let timeshiftExcludes = [];
+let timeshiftExcludesDirty = false;
 
 async function loadTimeshiftPage() {
   loadTimeshiftStatus();
+  timeshiftExcludesDirty = false;
   loadTimeshiftSnapshots();
 }
 
@@ -2507,6 +2509,7 @@ function addTimeshiftExclude() {
     return;
   }
   timeshiftExcludes.push(path);
+  timeshiftExcludesDirty = true;
   input.value = '';
   renderTimeshiftExcludes();
 }
@@ -2519,12 +2522,14 @@ function addTimeshiftExcludePath(path) {
     return;
   }
   timeshiftExcludes.push(path);
+  timeshiftExcludesDirty = true;
   renderTimeshiftExcludes();
 }
 
 function removeTimeshiftExclude(idx) {
   if (idx >= 0 && idx < timeshiftExcludes.length) {
     timeshiftExcludes.splice(idx, 1);
+    timeshiftExcludesDirty = true;
     renderTimeshiftExcludes();
   }
 }
@@ -2541,6 +2546,7 @@ async function saveTimeshiftExcludes() {
     });
     const data = await resp.json();
     if (data.success) {
+      timeshiftExcludesDirty = false;
       showTimeshiftStatus(data.message, 'success');
     } else {
       showTimeshiftStatus(data.message || '除外設定の保存に失敗しました', 'error');
@@ -2560,7 +2566,7 @@ async function loadTimeshiftSnapshots() {
     const resp = await fetch('/api/timeshift/snapshots');
     const data = await resp.json();
     const snaps = data.snapshots || [];
-    if (data.excludes) {
+    if (data.excludes && !timeshiftExcludesDirty) {
       timeshiftExcludes = [...data.excludes];
       renderTimeshiftExcludes();
     }
