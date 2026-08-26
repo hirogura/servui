@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.4.12</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.5.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -33,6 +33,10 @@
       <li data-tab="packages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
         <span>パッケージ</span>
+      </li>
+      <li data-tab="ports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
+        <span>公開ポート</span>
       </li>
       <li data-tab="terminal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -196,6 +200,21 @@
       <div id="package-status" class="status-msg"></div>
       <div id="package-list-container">
         <p class="muted">「アップデート確認」ボタンをクリックして、更新可能なパッケージを確認してください。</p>
+      </div>
+    </section>
+
+    <!-- Ports -->
+    <section id="tab-ports" class="tab-content">
+      <h1>リッスン中のサービス一覧</h1>
+      <div class="package-actions">
+        <button class="btn btn-primary" onclick="scanPorts()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          サービスを検出
+        </button>
+      </div>
+      <div id="ports-status" class="status-msg"></div>
+      <div id="ports-list-container">
+        <p class="muted">「サービスを検出」ボタンをクリックして、リッスン中のサービスを確認してください。</p>
       </div>
     </section>
 
@@ -743,6 +762,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>

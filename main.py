@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.12")
+app = FastAPI(title="serv-UI", version="1.5.0")
 
 
 @app.middleware("http")
@@ -270,6 +270,83 @@ async def system_processes():
     # Sort by CPU desc
     procs.sort(key=lambda x: x["cpu"], reverse=True)
     return procs[:30]
+
+
+@app.get("/api/ports/listen")
+async def ports_listen():
+    """List listening services (ss -tulnp) and their LAN accessibility."""
+    result = await run_cmd("ss -tulnpH 2>/dev/null", timeout=15)
+
+    def classify(host: str) -> str:
+        if host in ("0.0.0.0", "::", "*", ""):
+            return "all"
+        ip = host.strip("[]")
+        if ip == "::1" or ip.startswith("127."):
+            return "local"
+        return "limited"
+
+    rows: dict[tuple, dict] = {}
+    for line in result["stdout"].splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        proto = parts[0]
+        addr_field = parts[4]
+        if addr_field.startswith("["):
+            try:
+                host = addr_field[1:addr_field.index("]")]
+                port = addr_field.rsplit("]:", 1)[1]
+            except ValueError:
+                continue
+        else:
+            host, _, port = addr_field.rpartition(":")
+            host = host.split("%")[0]
+        if not port.isdigit():
+            continue
+
+        procs = re.findall(r'\(\("([^"]+)",pid=(\d+)', line.rsplit(" ", 1)[-1])
+        proc_names = []
+        pids = []
+        for name, pid in procs:
+            if name not in proc_names:
+                proc_names.append(name)
+            if pid not in pids:
+                pids.append(pid)
+
+        key = (proto, host, port)
+        if key in rows:
+            for name in proc_names:
+                if name not in rows[key]["processes"]:
+                    rows[key]["processes"].append(name)
+            for pid in pids:
+                if pid not in rows[key]["pids"]:
+                    rows[key]["pids"].append(pid)
+        else:
+            rows[key] = {
+                "proto": "tcp" if proto.startswith("tcp") else "udp",
+                "address": host,
+                "port": int(port),
+                "processes": proc_names,
+                "pids": pids,
+                "access": classify(host),
+            }
+
+    # Host IP addresses per interface (loopback excluded)
+    ips = []
+    try:
+        for iface, addrs in psutil.net_if_addrs().items():
+            if iface == "lo":
+                continue
+            for a in addrs:
+                if a.family.name in ("AF_INET", "AF_INET6") and not a.address.startswith("fe80"):
+                    addr = a.address.split("%")[0]
+                    entry = {"iface": iface, "address": addr}
+                    if entry not in ips:
+                        ips.append(entry)
+    except Exception:
+        pass
+
+    return {"ips": ips, "ports": sorted(rows.values(), key=lambda r: r["port"])}
 
 
 # ============================================================

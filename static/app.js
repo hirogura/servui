@@ -25,6 +25,7 @@ function switchTab(tab) {
   if (tab === 'dashboard') loadDashboard();
   else if (tab === 'services') loadServices();
   else if (tab === 'packages') {} // Don't auto-check
+  else if (tab === 'ports') {} // Don't auto-scan
   else if (tab === 'terminal') {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       connectTerminal();
@@ -234,6 +235,81 @@ async function loadDashboard() {
   } catch (e) {
     console.error('Dashboard load error:', e);
   }
+}
+
+// --- Ports ---
+async function scanPorts() {
+  const container = document.getElementById('ports-list-container');
+  container.innerHTML = '<p class="muted">スキャン中...</p>';
+  try {
+    const resp = await fetch('/api/ports/listen');
+    const data = await resp.json();
+    window._allPorts = data.ports;
+    window._portIps = data.ips || [];
+    renderIps(window._portIps);
+    renderPorts(data.ports);
+  } catch (e) {
+    container.innerHTML = `<p class="muted">エラー: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderIps(ips) {
+  if (!ips || !ips.length) return;
+  const labels = { enp: 'LAN', tailscale: 'Tailscale' };
+  const items = ips.map(ip => {
+    const label = Object.keys(labels).find(k => ip.iface.startsWith(k));
+    return `${label ? labels[label] : ip.iface}: ${ip.address}`;
+  });
+  document.getElementById('ports-status').innerHTML =
+    `<span class="badge badge-active">IPアドレス</span> ${items.map(escapeHtml).join(' / ')}`;
+}
+
+function ifaceLabel(iface) {
+  if (iface.startsWith('tailscale')) return 'Tailscale';
+  if (iface.startsWith('enp') || iface.startsWith('eth') || iface.startsWith('ens')) return 'LAN';
+  return iface;
+}
+
+function addressLabel(address) {
+  const ip = window._portIps.find(i => i.address === address);
+  if (ip) return ifaceLabel(ip.iface);
+  if (address.startsWith('fd7a:115c:a1e0')) return 'Tailscale';
+  return null;
+}
+
+function renderPorts(ports) {
+  const tbody = ports.map(p => {
+    const proc = p.processes.length
+      ? `${p.processes.map(escapeHtml).join(', ')} <span class="muted">(PID ${p.pids.join(', ')})</span>`
+      : '<span class="muted">-</span>';
+    let access;
+    if (p.access === 'all') {
+      access = '<span class="badge badge-active">✅ 可能</span>';
+    } else if (p.access === 'limited') {
+      const label = addressLabel(p.address);
+      access = label
+        ? `<span class="badge badge-other" title="${escapeHtml(p.address)}">⚠️ ${escapeHtml(label)}経由のみ</span>`
+        : `<span class="badge badge-other" title="${escapeHtml(p.address)}">⚠️ ${escapeHtml(p.address)} 経由のみ</span>`;
+    } else {
+      access = '<span class="badge badge-inactive">❌ ローカルのみ</span>';
+    }
+    return `
+      <tr>
+        <td>${p.port}<span class="muted">/${p.proto}</span></td>
+        <td>${escapeHtml(p.address)}</td>
+        <td>${proc}</td>
+        <td>${access}</td>
+      </tr>
+    `;
+  }).join('');
+  document.getElementById('ports-list-container').innerHTML = `
+    <table class="proc-table">
+      <thead>
+        <tr><th>ポート</th><th>バインドアドレス</th><th>プロセス</th><th>LANアクセス</th></tr>
+      </thead>
+      <tbody>${tbody || '<tr><td colspan="4" class="muted">リッスン中のサービスはありません。</td></tr>'}</tbody>
+    </table>
+  `;
 }
 
 // --- Services ---
