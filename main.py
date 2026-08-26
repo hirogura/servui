@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.11")
+app = FastAPI(title="serv-UI", version="1.4.12")
 
 
 @app.middleware("http")
@@ -2065,6 +2065,52 @@ def _get_timeshift_snapshot_size(name: str) -> str:
     return "-"
 
 
+def _write_file_root_safe(path: str, payload: str, mkdir_dir: str | None = None) -> bool:
+    """Write a file as the current user, falling back to sudo via a temp copy."""
+    try:
+        if mkdir_dir:
+            os.makedirs(mkdir_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+        return True
+    except OSError:
+        pass
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="servui_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        cmd = f"cp '{tmp}' '{path}'"
+        if mkdir_dir:
+            cmd = f"mkdir -p '{mkdir_dir}' && {cmd}"
+        r = subprocess.run(_sudo(cmd), shell=True, capture_output=True, timeout=15)
+        os.unlink(tmp)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+_SERVUI_TS_EXCLUDES_PATH = "/etc/servui/timeshift-excludes.json"
+
+
+def _read_servui_ts_excludes() -> list[str] | None:
+    """Read the serv-UI managed exclude list (source of truth for the UI)."""
+    try:
+        with open(_SERVUI_TS_EXCLUDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data.get("excludes"), list):
+            return [str(x) for x in data["excludes"] if str(x).strip()]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _write_servui_ts_excludes(excludes: list[str]) -> bool:
+    payload = json.dumps({"excludes": excludes}, indent=2)
+    return _write_file_root_safe(
+        _SERVUI_TS_EXCLUDES_PATH, payload, mkdir_dir=os.path.dirname(_SERVUI_TS_EXCLUDES_PATH)
+    )
+
+
 def _default_ts_excludes() -> list[str]:
     """Build the default exclude list (home dirs, /root, non-root mounts)."""
     default_excludes: list[str] = []
@@ -2136,13 +2182,16 @@ async def timeshift_snapshots():
             "btrfs_mode": "false",
             "exclude-apps": [],
         }
-        try:
-            with open("/etc/timeshift/timeshift.json", "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-        except OSError:
-            pass
+        _write_file_root_safe(
+            "/etc/timeshift/timeshift.json", json.dumps(cfg, indent=2)
+        )
+        _write_servui_ts_excludes(excludes)
     elif not excludes and cfg.get("do_first_run") == "true":
         excludes = _default_ts_excludes()
+
+    servui_excludes = _read_servui_ts_excludes()
+    if servui_excludes is not None:
+        excludes = servui_excludes
 
     return {"snapshots": snapshots, "excludes": excludes}
 
@@ -2172,11 +2221,19 @@ async def timeshift_save_excludes(req: Request):
     cfg.setdefault("btrfs_mode", "false")
     cfg.setdefault("exclude-apps", [])
 
+    if not _write_file_root_safe(cfg_path, json.dumps(cfg, indent=2)):
+        return {"success": False, "message": "設定ファイルの書き出しに失敗しました（権限を確認してください）"}
+    _write_servui_ts_excludes(excludes)
+
+    # Verify what actually landed on disk (external processes may rewrite it).
     try:
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-    except OSError as e:
-        return {"success": False, "message": f"設定ファイルの書き出しに失敗しました: {e}"}
+        with open(cfg_path, encoding="utf-8") as f:
+            on_disk = json.load(f).get("exclude", [])
+        print(f"[timeshift-save] written={excludes} on_disk_after={on_disk}", flush=True)
+        if on_disk != excludes:
+            return {"success": False, "message": f"保存後に設定が他プロセスによって書き換えられました: {on_disk}"}
+    except (OSError, json.JSONDecodeError):
+        pass
 
     return {"success": True, "message": "除外設定を保存しました"}
 
@@ -2200,6 +2257,7 @@ async def timeshift_create(req: Request):
 
     exclude_json = json.dumps(excludes)
     print(f"[timeshift-create] excludes from client: {exclude_json}", flush=True)
+    _write_servui_ts_excludes(excludes)
     safe_comment = comment.replace("'", "'\\''") if comment else ""
     comment_arg = f" --comments '{safe_comment}'" if comment else ""
 
