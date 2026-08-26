@@ -278,13 +278,23 @@ async def ports_listen():
     """List listening services (ss -tulnp) and their LAN accessibility."""
     try:
         return await _collect_listening_ports()
-    except Exception:
+    except Exception as e:
         logging.getLogger("uvicorn.error").exception("ports_listen failed")
-        return {"ips": [], "ports": []}
+        return {"ips": [], "ports": [], "error": str(e)}
 
 
 async def _collect_listening_ports() -> dict:
-    result = await run_cmd("ss -tulnpH 2>/dev/null", timeout=15)
+    # -H (no header) is not supported by older iproute2; parsing skips headers anyway
+    result = await run_cmd("ss -tulnp 2>/dev/null", timeout=15)
+    error = None
+    local_idx = 4
+    if result["returncode"] != 0 or not result["stdout"].strip():
+        alt = await run_cmd("netstat -tuln 2>/dev/null", timeout=15)
+        if alt["returncode"] == 0 and alt["stdout"].strip():
+            result = alt
+            local_idx = 3
+        else:
+            error = f"ss rc={result['returncode']}: {result['stderr'].strip()[:200]}"
 
     def classify(host: str) -> str:
         if host in ("0.0.0.0", "::", "*", ""):
@@ -300,7 +310,7 @@ async def _collect_listening_ports() -> dict:
         if len(parts) < 5:
             continue
         proto = parts[0]
-        addr_field = parts[4]
+        addr_field = parts[local_idx]
         if addr_field.startswith("["):
             try:
                 host = addr_field[1:addr_field.index("]")]
@@ -356,7 +366,7 @@ async def _collect_listening_ports() -> dict:
     except Exception:
         pass
 
-    return {"ips": ips, "ports": sorted(rows.values(), key=lambda r: r["port"])}
+    return {"ips": ips, "ports": sorted(rows.values(), key=lambda r: r["port"]), "error": error}
 
 
 # ============================================================

@@ -255,6 +255,12 @@ async function scanPorts() {
     window._portIps = data.ips || [];
     renderIps(window._portIps);
     renderPorts(data.ports || []);
+    if (data.error) {
+      showStatus(`検出時に問題が発生しました: ${data.error}`, 'error');
+    } else if (!resp.ok || !Array.isArray(data.ports)) {
+      document.getElementById('ports-list-container').innerHTML =
+        `<p class="muted">応答が不正です (HTTP ${resp.status})。serv-UIの再起動が必要な可能性があります。</p>`;
+    }
   } catch (e) {
     container.innerHTML = `<p class="muted">エラー: ${escapeHtml(e.message)}</p>`;
   }
