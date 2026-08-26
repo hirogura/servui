@@ -2346,28 +2346,31 @@ function setBackupControlsEnabled(enabled) {
 
 async function loadBackupStatus() {
   const envEl = document.getElementById('backup-env-status');
-  const installBtn = document.getElementById('btn-backup-install');
   try {
     const resp = await fetch('/api/backup/status');
     backupStatusData = await resp.json();
-    const installed = backupStatusData.installed;
-    const isoMounted = backupStatusData.iso_mounted;
+    const d = backupStatusData;
 
-    envEl.innerHTML =
-      `<div>Clonezilla: ${installed
-        ? '<span class="text-success">インストール済み</span>'
-        : '<span class="text-danger">未インストール</span>'}</div>` +
-      `<div>保存用パーティション (/iso): ${isoMounted
-        ? `<span class="text-success">マウント済み</span> (${escapeHtml(backupStatusData.iso_source || '?')}${backupStatusData.iso_fstype ? ', ' + escapeHtml(backupStatusData.iso_fstype) : ''}${backupStatusData.iso_size ? ', ' + escapeHtml(backupStatusData.iso_size) : ''})`
-        : '<span class="text-warn">未マウント</span>'}</div>` +
-      (installed && isoMounted ? '' :
-        `<div class="text-warn" style="margin-top:0.3rem;">${!installed
-          ? '先に「Clonezillaをインストール」を実行してください。'
-          : '/iso に保存用パーティションをマウントしてください。'}</div>`);
-
-    installBtn.disabled = installed;
-    installBtn.textContent = installed ? 'Clonezillaをインストール済み' : 'Clonezillaをインストール';
-    setBackupControlsEnabled(installed);
+    let html =
+      `<div>Clonezilla ISO: ${d.iso_found
+        ? `<span class="text-success">検出</span> (${escapeHtml(d.iso_path || '?')})`
+        : `<span class="text-danger">見つかりません</span> (/iso/${'clonezilla-live-*.iso'})`}</div>` +
+      `<div>保存用パーティション (/iso): ${d.iso_mounted
+        ? `<span class="text-success">マウント済み</span> (${escapeHtml(d.iso_source || '?')}${d.iso_fstype ? ', ' + escapeHtml(d.iso_fstype) : ''}${d.iso_size ? ', ' + escapeHtml(d.iso_size) : ''})`
+        : '<span class="text-warn">未マウント</span>'}</div>`;
+    if (d.secure_boot) {
+      html += `<div class="text-warn" style="margin-top:0.3rem;">⚠ Secure Boot が有効です。ISOループバックブートは起動できないため、無効化してください。</div>`;
+    }
+    if (!d.grub_saved) {
+      html += `<div class="muted" style="margin-top:0.3rem;">注: 初回実行時に GRUB_DEFAULT=saved へ自動変更されます（update-grub が追加で走ります）。</div>`;
+    }
+    if (!d.iso_found || !d.iso_mounted) {
+      html += `<div class="text-warn" style="margin-top:0.3rem;">${!d.iso_mounted
+        ? '/iso に保存用パーティションをマウントしてください。'
+        : `${escapeHtml('/iso')} に clonezilla-live-*.iso を配置してください。`}</div>`;
+    }
+    envEl.innerHTML = html;
+    setBackupControlsEnabled(d.iso_found && d.iso_mounted);
   } catch (e) {
     envEl.innerHTML = `<span class="text-danger">状態の取得に失敗しました: ${escapeHtml(e.message)}</span>`;
   }
@@ -2420,13 +2423,30 @@ async function sendToTerminal(cmd, infoMsg) {
   trySend();
 }
 
-async function installClonezilla() {
-  const btn = document.getElementById('btn-backup-install');
-  if (!confirm('Clonezillaのインストールを開始しますか？\n\nGitHubからcloneautoを取得してインストールします。\n・完了まで数分かかる場合があります\n・ターミナルで進捗を確認できます')) return;
-  btn.disabled = true;
-  const installCmd = 'cd ~ && wget https://github.com/hirogura/cloneauto/archive/refs/heads/main.tar.gz && tar xzf main.tar.gz && cd cloneauto-main && sudo ./install-clonezilla.sh';
-  await sendToTerminal(installCmd, 'Clonezillaをインストール中... ターミナルで進捗を確認できます。');
-  showBackupStatus('Clonezillaをインストール中... 完成後、このページを再表示すると状態が更新されます。', 'info');
+async function prepareClonezillaRun(mode, device, image, confirmMsg) {
+  if (!confirm(confirmMsg)) return false;
+  setBackupControlsEnabled(false);
+  showBackupStatus('GRUBエントリを準備中... (update-grub のため数十秒かかります)', 'info');
+  try {
+    const resp = await fetch('/api/backup/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, device, image }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      throw new Error(data.detail || `HTTP ${resp.status}`);
+    }
+    showBackupStatus(`${data.message}\nまもなく再起動します...`, 'info');
+    setTimeout(async () => {
+      await fetch('/api/system/reboot', { method: 'POST' });
+    }, 2000);
+    return true;
+  } catch (e) {
+    showBackupStatus(`準備エラー: ${e.message}`, 'error');
+    setBackupControlsEnabled(true);
+    return false;
+  }
 }
 
 async function runBackup() {
@@ -2435,25 +2455,8 @@ async function runBackup() {
     showBackupStatus('保存先パーティションを選択してください', 'error');
     return;
   }
-  let cmdData;
-  try {
-    const resp = await fetch('/api/backup/cmd', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'backup', device }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${resp.status}`);
-    }
-    cmdData = await resp.json();
-  } catch (e) {
-    showBackupStatus(`バックアップ準備エラー: ${e.message}`, 'error');
-    return;
-  }
-  if (!confirm(`バックアップを開始しますか？\n\n保存先パーティション: ${device}\n\n・実行すると自動的に再起動し、Clonezilla Live がバックアップを行います\n・バックアップ完了後、自動的に再起動します`)) return;
-  showBackupStatus(`${cmdData.message} でバックアップを開始します...`, 'info');
-  await sendToTerminal(cmdData.cmd, `${cmdData.message} でバックアップを開始します（自動的に再起動します）`);
+  await prepareClonezillaRun('backup', device, '',
+    `バックアップを開始しますか？\n\n保存先パーティション: ${device}\n\n・GRUBエントリを作成して自動的に再起動します\n・再起動後、Clonezilla Live がバックアップを行い、完了後に自動で再起動します`);
 }
 
 async function loadRestoreImages() {
@@ -2501,25 +2504,8 @@ async function runRestore() {
     showBackupStatus('パーティションとイメージを選択してください', 'error');
     return;
   }
-  let cmdData;
-  try {
-    const resp = await fetch('/api/backup/cmd', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'restore', device, image }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${resp.status}`);
-    }
-    cmdData = await resp.json();
-  } catch (e) {
-    showBackupStatus(`復元準備エラー: ${e.message}`, 'error');
-    return;
-  }
-  if (!confirm(`復元を開始しますか？\n\n復元元パーティション: ${device}\nバックアップイメージ: ${image}\n\n⚠️ 現在のシステムは選択したバックアップの内容で上書きされます\n⚠️ 実行すると自動的に再起動し、Clonezilla Live が復元を行います\n⚠️ 処理中に電源を切らないでください`)) return;
-  showBackupStatus(`${cmdData.message} で復元を開始します...`, 'info');
-  await sendToTerminal(cmdData.cmd, `${cmdData.message} で復元を開始します（自動的に再起動します）`);
+  await prepareClonezillaRun('restore', device, image,
+    `復元を開始しますか？\n\n復元元パーティション: ${device}\nバックアップイメージ: ${image}\n\n⚠️ 現在のシステムは選択したバックアップの内容で上書きされます\n⚠️ GRUBエントリを作成して自動的に再起動し、Clonezilla Live が復元を行います\n⚠️ 処理中に電源を切らないでください`);
 }
 
 // --- Timeshift ---

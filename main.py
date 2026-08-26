@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.5.0")
+app = FastAPI(title="serv-UI", version="1.6.0")
 
 
 @app.middleware("http")
@@ -1921,10 +1921,18 @@ async def vmmanager_status():
 
 
 # ============================================================
-# 7.5 Backup / Restore (Clonezilla / cloneauto)
+# 7.5 Backup / Restore (Clonezilla Live ISO loopback boot)
 # ============================================================
-CLONE_BACKUP_CMD = "/usr/local/sbin/clonezilla-backup"
-CLONE_RESTORE_CMD = "/usr/local/sbin/clonezilla-restore"
+CLONE_ISO_DIR = "/iso"
+CLONE_ISO_GLOB = "clonezilla-live-*.iso"
+GRUB_DEFAULT_FILE = "/etc/default/grub"
+BACKUP_ENTRY_BEGIN = "# BEGIN servui-backup-auto"
+BACKUP_ENTRY_END = "# END servui-backup-auto"
+BACKUP_LABEL = "Clonezilla Auto Backup (servui)"
+RESTORE_LABEL = "Clonezilla Auto Restore (servui)"
+IMAGE_PREFIX_FALLBACK = "ubuntu"
+# Legacy cloneauto helper (only read for IMAGE_PREFIX compatibility)
+LEGACY_RESTORE_CMD = "/usr/local/sbin/clonezilla-restore"
 
 
 def _validate_block_device(device: str) -> str:
@@ -1963,16 +1971,135 @@ async def _list_clonezilla_partitions() -> list[dict]:
 
 
 def _clonezilla_image_prefix() -> str:
-    """Read IMAGE_PREFIX from the installed clonezilla-restore (default: ubuntu)."""
+    """Read IMAGE_PREFIX from a legacy cloneauto helper if present (default: ubuntu)."""
     try:
-        with open(CLONE_RESTORE_CMD, encoding="utf-8", errors="replace") as f:
+        with open(LEGACY_RESTORE_CMD, encoding="utf-8", errors="replace") as f:
             txt = f.read()
         m = re.search(r'^for d in "\\?\$SRC_MNT"/([A-Za-z0-9._-]+)-\*; do', txt, re.M)
         if m:
             return m.group(1)
     except OSError:
         pass
-    return "ubuntu"
+    return IMAGE_PREFIX_FALLBACK
+
+
+async def _find_clonezilla_iso() -> str | None:
+    """Return the newest clonezilla-live-*.iso under /iso, or None."""
+    matches = sorted(Path(CLONE_ISO_DIR).glob(CLONE_ISO_GLOB))
+    return str(matches[-1]) if matches else None
+
+
+async def _system_target_parts() -> list[str]:
+    """Partitions to save/restore: EFI, /boot (if separate), root — in that order.
+
+    Mirrors the TARGET_PARTS list of the legacy cloneauto install script.
+    """
+    parts: list[str] = []
+    r = await run_cmd("findmnt -n -o SOURCE,FSTYPE /boot/efi", timeout=5)
+    if r["returncode"] == 0:
+        fields = r["stdout"].split()
+        if len(fields) == 2 and fields[1] == "vfat":
+            parts.append(fields[0])
+    b = await run_cmd("findmnt -n -o SOURCE /boot", timeout=5)
+    if b["returncode"] == 0 and b["stdout"].strip():
+        boot = b["stdout"].strip()
+        r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
+        if boot != r["stdout"].strip():
+            parts.append(boot)
+    r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
+    if r["returncode"] == 0 and r["stdout"].strip():
+        parts.append(r["stdout"].strip())
+    return parts
+
+
+def _build_auto_entry(label: str, iso_path: str, part_uuid: str,
+                      prerun_dev: str, ocs_run: str) -> str:
+    """Generate an unattended Clonezilla ISO-loopback menuentry block.
+
+    ocs_prerun mounts the image repository partition at /home/partimag and
+    ocs_live_run runs ocs-sr in batch mode with all arguments fixed, so no
+    interactive prompt appears. ocs_final_action=reboot (-p reboot) returns
+    the machine to the normal boot entry after processing.
+
+    toram is REQUIRED when the ISO lives on the image repository partition:
+    live-boot keeps that partition mounted read-only at /run/live/findiso,
+    so a plain `mount <dev> /home/partimag` would share the read-only
+    superblock and every ocs-sr write fails (the run then stops at the
+    "Cloning finished. You can now choose to:" menu with no image created).
+    toram copies the live system into RAM and unmounts /run/live/findiso,
+    freeing the partition for a normal read-write mount.
+    """
+    params = (
+        "boot=live union=overlay username=user config components quiet noswap noeject "
+        "nofastboot ip=frommedia locales=en_US.UTF-8 keyboard-layouts=NONE toram "
+        'ocs_lang=en_US.UTF-8 ocs_live_batch="yes" ocs_final_action=reboot '
+        f'ocs_prerun="mount {prerun_dev} /home/partimag" '
+        f'ocs_live_run="{ocs_run}"'
+    )
+    return (
+        f'\nmenuentry "{label}" {{\n'
+        "    insmod part_gpt\n"
+        "    insmod lvm\n"
+        "    insmod ext2\n"
+        "    insmod loopback\n"
+        "    insmod iso9660\n"
+        f"    search --no-floppy --fs-uuid --set=isodev {part_uuid}\n"
+        f'    set isofile="{iso_path}"\n'
+        "    loopback loop ($isodev)$isofile\n"
+        f"    linux  (loop)/live/vmlinuz {params} findiso=$isofile\n"
+        "    initrd (loop)/live/initrd.img\n"
+        "}\n"
+    )
+
+
+async def _write_auto_entry_block(block: str) -> tuple[bool, str]:
+    """Replace the servui-backup-auto block in 40_custom with `block` (backup first)."""
+    bak = await _backup_grub_custom()
+    if not bak:
+        return False, "バックアップの作成に失敗しました"
+
+    content = await _read_text(GRUB_CUSTOM_FILE)
+    if content is None:
+        return False, f"{GRUB_CUSTOM_FILE} を読み取れませんでした"
+
+    pattern = re.compile(
+        re.escape(BACKUP_ENTRY_BEGIN) + r".*?" + re.escape(BACKUP_ENTRY_END) + r"\n?",
+        re.S,
+    )
+    if pattern.search(content):
+        content = pattern.sub("", content)
+    content = (
+        content.rstrip("\n")
+        + f"\n\n{BACKUP_ENTRY_BEGIN}\n"
+        + block.strip("\n")
+        + f"\n{BACKUP_ENTRY_END}\n"
+    )
+
+    ok, err = await _write_root_file(GRUB_CUSTOM_FILE, content)
+    if not ok:
+        return False, f"{GRUB_CUSTOM_FILE}への書き込みに失敗しました: {err}"
+    return True, ""
+
+
+async def _ensure_grub_saved() -> str:
+    """Ensure GRUB_DEFAULT=saved so grub-reboot works. Returns a note or ''."""
+    g = await _read_text(GRUB_DEFAULT_FILE)
+    if g is None:
+        raise HTTPException(status_code=500, detail="/etc/default/grub を読み取れませんでした")
+    m = re.search(r"^GRUB_DEFAULT=(.*)$", g, re.M)
+    if m and m.group(1).strip().strip("\"'") == "saved":
+        return ""
+    if m:
+        cmd = _sudo(f"sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' {GRUB_DEFAULT_FILE}")
+    else:
+        cmd = _sudo(f"sh -c 'echo GRUB_DEFAULT=saved >> {shlex.quote(GRUB_DEFAULT_FILE)}'")
+    res = await run_cmd(cmd, timeout=15)
+    if res["returncode"] != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"GRUB_DEFAULT=saved への変更に失敗しました: {res['stderr'].strip()}",
+        )
+    return ("注: GRUB_DEFAULT=saved に変更しました（次回起動から1回限りのブート選択が有効になります）")
 
 
 async def _list_clonezilla_images(device: str) -> list[str]:
@@ -2015,19 +2142,28 @@ async def _list_clonezilla_images(device: str) -> list[str]:
 
 @app.get("/api/backup/status")
 async def backup_status():
-    """Check Clonezilla helper installation and /iso mount status."""
-    b = await run_cmd(f"test -x {CLONE_BACKUP_CMD}", timeout=5)
-    r = await run_cmd(f"test -x {CLONE_RESTORE_CMD}", timeout=5)
-    installed = b["returncode"] == 0 and r["returncode"] == 0
+    """Check Clonezilla ISO presence, /iso mount status and GRUB one-shot boot readiness."""
+    iso_path = await _find_clonezilla_iso()
 
     mnt = await run_cmd("findmnt -n -o SOURCE,FSTYPE,SIZE --target /iso", timeout=5)
     fields = mnt["stdout"].split()
+
+    g = await _read_text(GRUB_DEFAULT_FILE) or ""
+    gm = re.search(r"^GRUB_DEFAULT=(.*)$", g, re.M)
+    grub_saved = bool(gm) and gm.group(1).strip().strip("\"'") == "saved"
+
+    sb = await run_cmd("mokutil --sb-state 2>/dev/null", timeout=5)
+    secure_boot = "secureboot enabled" in sb["stdout"].strip().lower()
+
     return {
-        "installed": installed,
+        "iso_found": bool(iso_path),
+        "iso_path": iso_path,
         "iso_mounted": mnt["returncode"] == 0,
         "iso_source": fields[0] if len(fields) > 0 else None,
         "iso_fstype": fields[1] if len(fields) > 1 else None,
         "iso_size": fields[2] if len(fields) > 2 else None,
+        "grub_saved": grub_saved,
+        "secure_boot": secure_boot,
     }
 
 
@@ -2047,54 +2183,121 @@ async def backup_images(req: Request):
     return {"images": images, "prefix": _clonezilla_image_prefix()}
 
 
-@app.post("/api/backup/cmd")
-async def backup_cmd(req: Request):
-    """Build the terminal command for clonezilla-backup / clonezilla-restore.
+@app.post("/api/backup/run")
+async def backup_run(req: Request):
+    """Prepare a one-shot unattended Clonezilla run via ISO loopback boot.
 
-    The helpers prompt for partition/image selection on stdin, so we compute
-    the menu indexes here (with the exact same listing logic) and pipe the
-    answers into the command.
+    Writes an auto entry into 40_custom (loopback-booting the Clonezilla Live
+    ISO with fixed ocs-sr arguments), ensures GRUB_DEFAULT=saved, runs
+    update-grub and arms grub-reboot so the next boot performs the backup or
+    restore automatically. The caller reboots afterwards.
     """
     data = await req.json()
     mode = data.get("mode", "").strip()
     device = _validate_block_device(data.get("device", "").strip())
     image = (data.get("image") or "").strip()
 
-    partitions = await _list_clonezilla_partitions()
-    index = next((i for i, p in enumerate(partitions) if p["device"] == device), None)
-    if index is None:
-        raise HTTPException(status_code=404, detail=f"{device} がパーティション一覧に見つかりません")
+    iso_path = await _find_clonezilla_iso()
+    if not iso_path:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{CLONE_ISO_DIR} に {CLONE_ISO_GLOB} が見つかりません",
+        )
+
+    mnt = await run_cmd("findmnt -n -o SOURCE --target /iso", timeout=5)
+    iso_src = mnt["stdout"].strip()
+    if not iso_src:
+        raise HTTPException(status_code=500, detail="/iso がマウントされていません")
+    u = await run_cmd(f"blkid -s UUID -o value {shlex.quote(iso_src)}", timeout=10)
+    part_uuid = u["stdout"].strip()
+    if not part_uuid:
+        raise HTTPException(
+            status_code=500,
+            detail=f"/iso パーティション ({iso_src}) のUUIDを取得できませんでした",
+        )
+
+    prefix = _clonezilla_image_prefix()
+    targets = await _system_target_parts()
+    if not targets:
+        raise HTTPException(
+            status_code=500, detail="バックアップ対象パーティション (/ 等) を検出できませんでした"
+        )
+    target_str = " ".join(targets)
 
     if mode == "backup":
-        cmd = f"printf '{index + 1}\\n' | sudo {CLONE_BACKUP_CMD}"
-        message = f"保存先: {device}"
-        return {"success": True, "cmd": cmd, "message": message}
-
-    if mode == "restore":
+        label = BACKUP_LABEL
+        images = await _list_clonezilla_images(device)
+        img_name = f"{prefix}-{datetime.now().strftime('%Y-%m-%d')}"
+        if img_name in images:
+            img_name = f"{prefix}-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
+        ocs_run = (
+            f"ocs-sr -q2 -j2 -z1p -sc -p reboot -batch saveparts {img_name} {target_str}"
+        )
+        summary = f"保存先: {device} / イメージ: {img_name}"
+    elif mode == "restore":
+        label = RESTORE_LABEL
         if not image:
             raise HTTPException(status_code=400, detail="image is required")
-
-        prefix = _clonezilla_image_prefix()
-        # Validate image name to prevent shell injection
         if not re.fullmatch(rf"{re.escape(prefix)}-[A-Za-z0-9._-]+", image):
             raise HTTPException(status_code=400, detail="invalid image name")
-
         images = await _list_clonezilla_images(device)
-
-        img_index = next((i for i, img in enumerate(images) if img == image), None)
-        if img_index is None:
+        if image not in images:
             raise HTTPException(
                 status_code=404,
                 detail=f"イメージ {image} が {device} 上に見つかりません",
             )
-
-        cmd = (
-            f"printf '{index + 1}\\n{img_index + 1}\\nyes\\n' "
-            f"| sudo {CLONE_RESTORE_CMD}"
+        ocs_run = (
+            f"ocs-sr -g auto -k -scr -p reboot -batch restoreparts {image} {target_str}"
         )
-        return {"success": True, "cmd": cmd, "message": f"復元元: {device} / イメージ: {image}"}
+        summary = f"復元元: {device} / イメージ: {image}"
+    else:
+        raise HTTPException(status_code=400, detail="mode must be 'backup' or 'restore'")
 
-    raise HTTPException(status_code=400, detail="mode must be 'backup' or 'restore'")
+    # GRUB sees the ISO relative to the filesystem found by `search --fs-uuid`,
+    # so the mount-point prefix (/iso) must be stripped, e.g. "/foo.iso" not
+    # "/iso/foo.iso".
+    mnt_t = await run_cmd(
+        f"findmnt -n -o TARGET --source {shlex.quote(iso_src)}", timeout=5
+    )
+    iso_mnt = mnt_t["stdout"].strip() or "/"
+    try:
+        grub_iso = "/" + str(Path(iso_path).resolve().relative_to(Path(iso_mnt).resolve()))
+    except ValueError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{iso_path} はマウントポイント {iso_mnt} 配下にありません",
+        )
+
+    block = _build_auto_entry(label, grub_iso, part_uuid, device, ocs_run)
+
+    ok, err = await _write_auto_entry_block(block)
+    if not ok:
+        raise HTTPException(status_code=500, detail=err)
+
+    saved_note = await _ensure_grub_saved()
+
+    upd = await run_cmd(_sudo("update-grub"), timeout=180)
+    if upd["returncode"] != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"update-grub に失敗しました: {upd['stderr'].strip()[:300]}",
+        )
+
+    gr = await run_cmd(_sudo(f"grub-reboot {shlex.quote(label)}"), timeout=15)
+    if gr["returncode"] != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"grub-reboot に失敗しました: {gr['stderr'].strip()}",
+        )
+
+    message = (
+        f"{summary}\n"
+        f"準備完了。再起動すると「{label}」で起動し、Clonezilla Live が自動処理します\n"
+        f"対象: {target_str}"
+    )
+    if saved_note:
+        message += f"\n{saved_note}"
+    return {"success": True, "message": message, "label": label}
 
 
 # ---------------------------------------------------------------------------

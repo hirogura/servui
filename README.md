@@ -14,7 +14,7 @@ Webベースのサーバー管理ツール。Tailscale内のHTTPS経由でアク
 | ディスク管理 | パーティションのマウント（一時/永続）・作成・拡張・削除、LVM (VG/LV) の作成・リサイズ・削除 |
 | GRUB編集 | GRUBエントリーの一覧・削除、ISOループブートエントリーの追加、WebからのISOダウンロード（/isoへwget保存、進捗表示・キャンセル対応）、次回起動時のみGRUBメニューを表示 |
 | selfcode / Easy LXD / VM Manager | 連携アプリの導入と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
-| バックアップ/復元 | Clonezilla (cloneauto) によるパーティション単位のバックアップ・復元 |
+| バックアップ/復元 | /iso 内の Clonezilla Live ISO をループバックブートして無人実行するパーティション単位のバックアップ・復元 |
 | serv-UI一括管理 | Tailnet内で稼働中のserv-UIを自動検出して一覧表示。ピン留めしたサーバー（ホスト名/CPU使用率・温度/メモリ使用率/ディスク使用量）をページ上部に固定表示し、ホスト名クリックで新しいタブで開く |
 | システム操作 | serv-UIの再起動・アップデート、PC本体の再起動・シャットダウン |
 
@@ -22,13 +22,15 @@ Webベースのサーバー管理ツール。Tailscale内のHTTPS経由でアク
 
 ### バックアップ/復元について
 
-[cloneauto](https://github.com/hirogura/cloneauto) を利用したClonezilla連携機能です。
+`/iso` に保存した Clonezilla Live ISO を GRUB ループバックブートで起動する無人バックアップ/復元機能です（cloneauto等のインストールは不要）。
 
 - **パーティションのみ対応**（LVMは非対応）
 - 事前に**保存用パーティション**を用意し、**`/iso` にマウント**しておく必要があります
-- 「Clonezillaをインストール」ボタンでGitHubからcloneautoを取得し、Clonezilla Live・ヘルパーコマンド (`sudo clonezilla-backup` / `sudo clonezilla-restore`)・GRUBメニューをインストールします
-- バックアップ/復元を実行すると自動的に再起動し、Clonezilla Liveが処理を行います（完了後も自動で再起動します）
+- `clonezilla-live-*.iso` を `/iso` 直下に配置しておきます
+- 実行すると `/etc/grub.d/40_custom` に無人実行用エントリを生成し、`grub-reboot` で次回起動のみ Clonezilla Live を起動して処理を行います（完了後は自動で再起動し、通常起動に戻ります）
+- 初回実行時に `GRUB_DEFAULT=saved` へ自動変更されます
 - 復元では保存先パーティション内のバックアップイメージを選択できます
+- **Secure Boot非対応**のため、無効化しておく必要があります
 
 ## インストール
 
@@ -140,7 +142,7 @@ sudo systemctl stop servui
     ├── apt (パッケージ管理)
     ├── lsblk / mount / LVM (ディスク管理)
     ├── grub関連ファイル (GRUB編集)
-    ├── cloneauto / Clonezilla Live (バックアップ/復元)
+    ├── Clonezilla Live ISO ループバックブート (バックアップ/復元)
     └── WebSocket (ターミナル)
 ```
 

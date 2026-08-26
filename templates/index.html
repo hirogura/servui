@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.1.5.0</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.6.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -579,20 +579,11 @@
         <ul class="backup-notes">
           <li><strong>パーティションのみ対応</strong>です（LVM は非対応）。</li>
           <li><strong>保存用パーティション</strong>を用意し、<strong>/iso</strong> にマウントしておく必要があります。</li>
-          <li>バックアップ/復元を実行すると自動的に再起動し、Clonezilla Live が処理を行います（完了後も自動で再起動します）。</li>
+          <li><strong>/iso</strong> 内の Clonezilla Live ISO を GRUB ループバックブートで起動するため、インストール作業は不要です。</li>
+          <li>実行すると自動的に再起動し、Clonezilla Live が処理を行います（完了後も自動で再起動します）。</li>
+          <li>Secure Boot が有効だと起動できないため、無効化しておく必要があります。</li>
         </ul>
         <div id="backup-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>
-      </div>
-
-      <h2>セットアップ</h2>
-      <div class="stat-card">
-        <p class="muted" style="margin-bottom:0.75rem;">
-          GitHubからcloneautoを取得してインストールします。Clonezilla Live本体、自動バックアップ/復元コマンド
-          （sudo clonezilla-backup / sudo clonezilla-restore）、GRUBメニューが登録されます。
-        </p>
-        <button class="btn btn-primary" id="btn-backup-install" onclick="installClonezilla()" disabled>
-          Clonezillaをインストール
-        </button>
       </div>
 
       <h2>バックアップ</h2>
