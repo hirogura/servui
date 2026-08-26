@@ -2436,6 +2436,7 @@ async function runRestore() {
 let timeshiftStatusData = null;
 let timeshiftExcludes = [];
 let timeshiftExcludesDirty = false;
+let tsExcludeLoadSeq = 0;
 
 async function loadTimeshiftPage() {
   loadTimeshiftStatus();
@@ -2546,7 +2547,6 @@ async function saveTimeshiftExcludes() {
     });
     const data = await resp.json();
     if (data.success) {
-      timeshiftExcludesDirty = false;
       showTimeshiftStatus(data.message, 'success');
     } else {
       showTimeshiftStatus(data.message || '除外設定の保存に失敗しました', 'error');
@@ -2560,11 +2560,13 @@ async function saveTimeshiftExcludes() {
 }
 
 async function loadTimeshiftSnapshots() {
+  const seq = ++tsExcludeLoadSeq;
   const listEl = document.getElementById('timeshift-snapshot-list');
   listEl.innerHTML = '<p class="muted"><span class="spinner"></span> 読み込み中...</p>';
   try {
     const resp = await fetch('/api/timeshift/snapshots');
     const data = await resp.json();
+    if (seq !== tsExcludeLoadSeq) return;
     const snaps = data.snapshots || [];
     if (data.excludes && !timeshiftExcludesDirty) {
       timeshiftExcludes = [...data.excludes];
