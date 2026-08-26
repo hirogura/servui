@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.7.0")
+app = FastAPI(title="serv-UI", version="1.7.1")
 
 
 @app.middleware("http")
@@ -3101,7 +3101,11 @@ async def _resolve_part_device(name: str) -> tuple[str, bool] | None:
 
 
 async def _detect_boot_paths(iso_path: str) -> tuple[str, str, str]:
-    """Loop-mount an ISO read-only and detect vmlinuz/initrd paths (like _detect_boot_paths in the script)."""
+    """Loop-mount an ISO read-only and detect vmlinuz/initrd paths (like _detect_boot_paths in the script).
+
+    Returns (vmlinuz, initrd, boot_type) where boot_type is one of:
+    'casper', 'live', 'clonezilla', or 'custom'.
+    """
     tmp = f"/mnt/_servui_isoinspect_{os.getpid()}"
     await run_cmd(_sudo(f"mkdir -p {shlex.quote(tmp)}"))
     vmlinuz, initrd, boot_type = "UNKNOWN", "UNKNOWN", "custom"
@@ -3123,6 +3127,14 @@ async def _detect_boot_paths(iso_path: str) -> tuple[str, str, str]:
                     if c[0] == found[0]:
                         vmlinuz, initrd, boot_type = f"/{c[0]}", f"/{c[1]}", c[2]
                         break
+                # Detect Clonezilla: live/vmlinuz + live/filesystem.squashfs
+                if boot_type == "live":
+                    cz_check = await run_cmd(
+                        _sudo(f"test -f {shlex.quote(tmp + '/live/filesystem.squashfs')}"),
+                        timeout=5,
+                    )
+                    if cz_check["returncode"] == 0:
+                        boot_type = "clonezilla"
             else:
                 fres = await run_cmd(
                     _sudo(f"find {shlex.quote(tmp)} -name 'vmlinuz*' 2>/dev/null | head -1"),
@@ -3215,8 +3227,20 @@ def _validate_grub_path(p: str) -> bool:
 
 def _build_iso_grub_entry(menu_label: str, iso_rel: str, vmlinuz: str, initrd: str,
                           boot_type: str, *, is_lvm: bool, lvm_name: str, part_uuid: str) -> str:
-    """Generate a menuentry block (same format as grub-manage.sh)."""
-    if boot_type == "casper":
+    """Generate a menuentry block (same format as grub-manage.sh).
+
+    For Clonezilla ISOs (boot_type='clonezilla'), adds toram and ocs_* parameters
+    so the live system loads into RAM and the ISO partition is freed for read-write
+    access by Clonezilla.
+    """
+    if boot_type == "clonezilla":
+        params = (
+            "boot=live union=overlay username=user config components quiet noswap noeject "
+            "nofastboot ip=frommedia locales=en_US.UTF-8 keyboard-layouts=NONE toram "
+            "ocs_lang=en_US.UTF-8 ocs_live_batch=\"yes\" ocs_final_action=reboot "
+            "findiso=$isofile"
+        )
+    elif boot_type == "casper":
         params = "boot=casper iso-scan/filename=$isofile quiet splash ---"
     elif boot_type == "live":
         params = "boot=live iso-scan/filename=$isofile quiet splash"
