@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.4.7")
+app = FastAPI(title="serv-UI", version="1.4.8")
 
 # Static files and templates
 BASE_DIR = Path(__file__).parent
@@ -2055,6 +2055,35 @@ def _get_timeshift_snapshot_size(name: str) -> str:
     return "-"
 
 
+def _default_ts_excludes() -> list[str]:
+    """Build the default exclude list (home dirs, /root, non-root mounts)."""
+    default_excludes: list[str] = []
+    try:
+        for u in os.listdir("/home"):
+            if os.path.isdir(os.path.join("/home", u)) and not u.startswith("."):
+                default_excludes.append(f"/home/{u}/**")
+    except OSError:
+        pass
+    if not default_excludes:
+        default_excludes = ["/home/user/**"]
+    default_excludes.append("/root/**")
+    try:
+        root_src = subprocess.check_output(
+            "findmnt -n -o SOURCE /", shell=True, text=True, timeout=5
+        ).strip()
+        for line in subprocess.check_output(
+            "findmnt -n -o SOURCE,TARGET", shell=True, text=True, timeout=5
+        ).splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] != root_src and parts[0].startswith("/dev/"):
+                mp = parts[1].rstrip("/")
+                if mp and mp != "/":
+                    default_excludes.append(f"{mp}/**")
+    except Exception:
+        pass
+    return default_excludes
+
+
 @app.get("/api/timeshift/snapshots")
 async def timeshift_snapshots():
     """List existing Timeshift snapshots."""
@@ -2087,34 +2116,23 @@ async def timeshift_snapshots():
     except (OSError, json.JSONDecodeError):
         pass
 
-    if not has_config or not excludes:
-        default_excludes = []
+    if not has_config:
+        # First run: persist the defaults into the config file so that later
+        # edits made in the UI are kept instead of being overwritten on reload.
+        excludes = _default_ts_excludes()
+        cfg = {
+            "exclude": excludes,
+            "do_first_run": "false",
+            "btrfs_mode": "false",
+            "exclude-apps": [],
+        }
         try:
-            for u in os.listdir("/home"):
-                if os.path.isdir(os.path.join("/home", u)) and not u.startswith("."):
-                    default_excludes.append(f"/home/{u}/**")
+            with open("/etc/timeshift/timeshift.json", "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
         except OSError:
             pass
-        if not default_excludes:
-            default_excludes = ["/home/user/**"]
-        default_excludes.append("/root/**")
-        # Exclude mount points of non-root partitions (e.g. /iso, /mnt/data).
-        try:
-            root_src = subprocess.check_output(
-                "findmnt -n -o SOURCE /", shell=True, text=True, timeout=5
-            ).strip()
-            for line in subprocess.check_output(
-                "findmnt -n -o SOURCE,TARGET", shell=True, text=True, timeout=5
-            ).splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] != root_src and parts[0].startswith("/dev/"):
-                    mp = parts[1].rstrip("/")
-                    if mp and mp != "/":
-                        default_excludes.append(f"{mp}/**")
-        except Exception:
-            pass
-        if not has_config or (len(excludes) == 0 and cfg.get("do_first_run") == "true"):
-            excludes = default_excludes
+    elif not excludes and cfg.get("do_first_run") == "true":
+        excludes = _default_ts_excludes()
 
     return {"snapshots": snapshots, "excludes": excludes}
 
