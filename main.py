@@ -313,13 +313,14 @@ async def _collect_listening_ports() -> dict:
         addr_field = parts[local_idx]
         if addr_field.startswith("["):
             try:
-                host = addr_field[1:addr_field.index("]")]
-                port = addr_field.rsplit("]:", 1)[1]
+                close = addr_field.index("]")
+                host = addr_field[1:close]
+                port = addr_field[close + 1:].rpartition(":")[2]
             except ValueError:
                 continue
         else:
             host, _, port = addr_field.rpartition(":")
-            host = host.split("%")[0]
+        host = host.split("%")[0]
         if not port.isdigit():
             continue
 
