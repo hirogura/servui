@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.7.1")
+app = FastAPI(title="serv-UI", version="1.7.2")
 
 
 @app.middleware("http")
@@ -3647,6 +3647,64 @@ async def _iso_download_worker(proc: asyncio.subprocess.Process, dest: str) -> N
             _iso_dl_state["running"] = False
     finally:
         _iso_dl_proc = None
+
+
+_UBUNTU_RELEASES_BASE = "https://releases.ubuntu.com"
+
+
+@app.get("/api/grub/ubuntu-versions")
+async def ubuntu_versions():
+    """List available Ubuntu release versions from releases.ubuntu.com."""
+    url = f"{_UBUNTU_RELEASES_BASE}/"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "servui"})
+        resp = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=15, context=_SSL_UNVERIFIED)
+        )
+        html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"releases.ubuntu.comへの接続に失敗しました: {e}")
+    versions = []
+    for m in re.finditer(r'<a\s+href="(\d+\.\d+(?:\.\d+)?)/"[^>]*>\d+\.\d+(?:\.\d+)?/</a>.*?Ubuntu\s+([\d.]+(?:\s+LTS)?)\s*\(([^)]+)\)', html):
+        folder = m.group(1)
+        label = m.group(2).strip()
+        codename = (m.group(3) or "").strip()
+        display = f"Ubuntu {label}" + (f" ({codename})" if codename else "")
+        versions.append({"name": folder, "display": display})
+    seen = set()
+    unique = []
+    for v in versions:
+        if v["name"] not in seen:
+            seen.add(v["name"])
+            unique.append(v)
+    def _ver_key(v):
+        parts = re.split(r"[.]", v["name"])
+        return [int(p) for p in parts if p.isdigit()]
+    unique.sort(key=_ver_key, reverse=True)
+    return {"versions": unique}
+
+
+@app.get("/api/grub/ubuntu-files")
+async def ubuntu_files(version: str):
+    """List ISO files for a given Ubuntu release version."""
+    if not re.match(r"^\d+\.\d+(?:\.\d+)?$", version):
+        raise HTTPException(status_code=400, detail="不正なバージョン指定です")
+    url = f"{_UBUNTU_RELEASES_BASE}/{version}/"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "servui"})
+        resp = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=15, context=_SSL_UNVERIFIED)
+        )
+        html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"releases.ubuntu.comへの接続に失敗しました: {e}")
+    files = []
+    for m in re.finditer(r'<a\s+href="(ubuntu-[^"]+\.iso)"[^>]*>\s*\1\s*</a>', html):
+        name = m.group(1)
+        download_url = f"{_UBUNTU_RELEASES_BASE}/{version}/{name}"
+        files.append({"name": name, "download_url": download_url})
+    files.sort(key=lambda f: f["name"])
+    return {"files": files}
 
 
 @app.post("/api/grub/iso-download")

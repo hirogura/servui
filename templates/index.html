@@ -538,12 +538,27 @@
         </div>
       </div>
 
-      <h2>WebからISOダウンロード</h2>
+      <h2>Ubuntu ISOダウンロード</h2>
       <div class="stat-card" style="margin-bottom:1rem;">
-        <p class="muted" style="margin-bottom:0.75rem;">ISOイメージの直接URLを入力して、/iso へダウンロードします。</p>
+        <p class="muted" style="margin-bottom:0.75rem;">releases.ubuntu.comからUbuntuのISOイメージを選択してダウンロードします（/iso に保存）。</p>
         <div class="form-group">
-          <label for="grub-iso-dl-url">ISOイメージのURL</label>
-          <input type="text" id="grub-iso-dl-url" placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04.3-live-server-amd64.iso" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+          <label for="ubuntu-version-select">バージョン</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="ubuntu-version-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-secondary" id="btn-ubuntu-files" onclick="loadUbuntuFiles()" disabled>ファイル検索</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="ubuntu-file-select">ISOファイル</label>
+          <select id="ubuntu-file-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">バージョンを選択して「ファイル検索」を押してください</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-top:0.75rem;">
+          <label for="grub-iso-dl-url">または直接URLを入力</label>
+          <input type="text" id="grub-iso-dl-url" placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
         </div>
         <div id="grub-iso-dl-progress" style="display:none;margin-bottom:0.75rem;">
           <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);height:12px;overflow:hidden;">
@@ -557,9 +572,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             Ubuntuリリースページ確認
           </a>
-          <button class="btn btn-primary" id="btn-grub-iso-dl" onclick="downloadIsoFromWeb()">
+          <button class="btn btn-primary" id="btn-grub-iso-dl" onclick="downloadUbuntuIso()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Webからダウンロード
+            ダウンロード
           </button>
           <button class="btn btn-secondary" id="btn-grub-iso-dl-cancel" onclick="cancelIsoDownload()" disabled>キャンセル</button>
         </div>

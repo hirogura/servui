@@ -1823,6 +1823,7 @@ async function loadGrub() {
   }
   loadGrubPartitions();
   syncIsoDownloadStatus();
+  loadUbuntuVersions();
 }
 
 function renderGrubInfo(data) {
@@ -2146,6 +2147,10 @@ async function pollIsoDownloadStatus() {
   cancelBtn.disabled = true;
   if (s.success === true || s.success === false) {
     btn.disabled = false;
+    const ubuntuFileSel = document.getElementById('ubuntu-file-select');
+    const ubuntuFileBtn = document.getElementById('btn-ubuntu-files');
+    if (ubuntuFileSel) ubuntuFileSel.disabled = false;
+    if (ubuntuFileBtn) ubuntuFileBtn.disabled = false;
     if (s.success) {
       statusEl.className = 'status-msg show success';
       statusEl.textContent = `${s.filename} を /iso に保存しました（${formatBytesJS(s.size)}）`;
@@ -2216,6 +2221,100 @@ function syncIsoDownloadStatus() {
       }
     })
     .catch(() => {});
+}
+
+async function loadUbuntuVersions() {
+  const sel = document.getElementById('ubuntu-version-select');
+  const fileBtn = document.getElementById('btn-ubuntu-files');
+  if (!sel) return;
+  try {
+    const resp = await fetch('/api/grub/ubuntu-versions');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    sel.innerHTML = data.versions.map(v =>
+      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.display)}</option>`
+    ).join('') || '<option value="">バージョンがありません</option>';
+    sel.disabled = false;
+    fileBtn.disabled = false;
+  } catch (e) {
+    sel.innerHTML = '<option value="">バージョン一覧の取得に失敗しました</option>';
+    document.getElementById('grub-iso-dl-status').className = 'status-msg show error';
+    document.getElementById('grub-iso-dl-status').textContent = `Ubuntuバージョン取得エラー: ${e.message}`;
+  }
+}
+
+async function loadUbuntuFiles() {
+  const version = document.getElementById('ubuntu-version-select').value;
+  const fileSel = document.getElementById('ubuntu-file-select');
+  const dlBtn = document.getElementById('btn-grub-iso-dl');
+  if (!version || !fileSel) return;
+  fileSel.innerHTML = '<option value="">読み込み中...</option>';
+  fileSel.disabled = true;
+  dlBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/grub/ubuntu-files?version=${encodeURIComponent(version)}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    fileSel.innerHTML = data.files.map(f =>
+      `<option value="${escapeHtml(f.download_url)}" data-filename="${escapeJs(f.name)}">${escapeHtml(f.name)}</option>`
+    ).join('') || '<option value="">ISOファイルがありません</option>';
+    fileSel.disabled = false;
+    dlBtn.disabled = false;
+  } catch (e) {
+    fileSel.innerHTML = '<option value="">ファイル一覧の取得に失敗しました</option>';
+    document.getElementById('grub-iso-dl-status').className = 'status-msg show error';
+    document.getElementById('grub-iso-dl-status').textContent = `Ubuntuファイル取得エラー: ${e.message}`;
+  }
+}
+
+async function downloadUbuntuIso() {
+  const fileSel = document.getElementById('ubuntu-file-select');
+  const input = document.getElementById('grub-iso-dl-url');
+  const statusEl = document.getElementById('grub-iso-dl-status');
+  const btn = document.getElementById('btn-grub-iso-dl');
+  let url = '';
+  if (fileSel && fileSel.value && !fileSel.disabled) {
+    url = fileSel.value;
+  } else if (input && input.value.trim()) {
+    url = input.value.trim();
+  }
+  if (!url) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = 'ISOファイルを選択するか、URLを入力してください';
+    return;
+  }
+  btn.disabled = true;
+  if (fileSel) fileSel.disabled = true;
+  const fileBtn = document.getElementById('btn-ubuntu-files');
+  if (fileBtn) fileBtn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> ダウンロードを開始しています...';
+  try {
+    const resp = await fetch('/api/grub/iso-download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = data.message;
+      btn.disabled = false;
+      if (fileSel) fileSel.disabled = false;
+      if (fileBtn) fileBtn.disabled = false;
+      return;
+    }
+    if (input) input.value = '';
+    stopIsoDlPolling();
+    pollIsoDownloadStatus();
+    isoDlPollTimer = setInterval(pollIsoDownloadStatus, 1000);
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+    btn.disabled = false;
+    if (fileSel) fileSel.disabled = false;
+    if (fileBtn) fileBtn.disabled = false;
+  }
 }
 
 // --- Helpers ---
