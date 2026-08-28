@@ -1255,9 +1255,9 @@ function renderDiskDevice(dev, depth) {
   const layoutBar = isDisk ? renderDiskLayoutBar(dev) : '';
   const lvmHtml = dev.lvm ? renderLvmInfo(dev) : '';
   const children = (dev.children || []).map(c => renderDiskDevice(c, depth + 1)).filter(Boolean).join('');
+  const detailId = `disk-detail-${CSS.escape(dev.name)}`;
 
-  return `
-    <div class="stat-card" style="margin-bottom:1rem;margin-left:${indent}rem;${isPart ? 'border-left:3px solid var(--border);' : ''}">
+  const cardHeader = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
         <div style="display:flex;align-items:center;gap:0.5rem;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:1.2rem;height:1.2rem;flex-shrink:0;${isDisk ? 'color:var(--accent);' : ''}">
@@ -1269,15 +1269,53 @@ function renderDiskDevice(dev, depth) {
           <span class="badge ${typeBadgeClass}" style="font-size:0.7rem;">${typeLabel}</span>${fsLabel}
           ${removableBadge}${readonlyBadge}
         </div>
-        <div class="btn-group">${createBtn}${diskDeleteBtn}${actionBtn}${deleteBtn}</div>
-      </div>
+        <div class="btn-group">
+          ${createBtn}${diskDeleteBtn}${actionBtn}${deleteBtn}
+          ${isDisk ? `
+          <button class="btn btn-sm btn-secondary" onclick="toggleDiskDetail('${escapeHtml(dev.name)}')" title="パーティション情報を表示" id="btn-toggle-detail-${detailId}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem;transition:transform 0.15s;"><polyline points="6 9 12 15 18 9"/></svg>
+            詳細
+          </button>` : ''}
+        </div>
+      </div>`;
+
+  const baseBody = `
       ${layoutBar}
       ${lvmHtml}
       ${infoRows ? `<table class="proc-table" style="margin:0;"><tbody>${infoRows}</tbody></table>` : ''}
-      ${usageHtml}
-    </div>
-    ${children}
-  `;
+      ${usageHtml}`;
+
+  if (isDisk) {
+    // ディスクの基本情報（レイアウト・サイズ・使用量）は常時表示、
+    // パーティション詳細（vda1, vda2 etc.）のみ折りたたみ
+    return `
+    <div class="stat-card" style="margin-bottom:1rem;">
+      ${cardHeader}
+      ${baseBody}
+      <div id="${detailId}" style="display:none;">
+        ${children}
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="stat-card" style="margin-bottom:1rem;margin-left:${indent}rem;border-left:3px solid var(--border);">
+      ${cardHeader}
+      ${baseBody}
+    </div>`;
+}
+
+function toggleDiskDetail(name) {
+  const detailId = `disk-detail-${CSS.escape(name)}`;
+  const el = document.getElementById(detailId);
+  if (!el) return;
+  const btn = document.getElementById(`btn-toggle-detail-${detailId}`);
+  const willShow = el.style.display === 'none' || !el.style.display;
+  el.style.display = willShow ? 'block' : 'none';
+  if (btn) {
+    const arrow = btn.querySelector('svg polyline');
+    if (arrow) arrow.setAttribute('points', willShow ? '18 15 12 9 6 15' : '6 9 12 15 18 9');
+  }
 }
 
 function openDiskMountModal(deviceName, fstype) {
