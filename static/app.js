@@ -2335,6 +2335,7 @@ function showStatus(msg, type) {
   if (!container) {
     container = document.createElement('div');
     container.id = 'toast-container';
+    container.style.position = 'fixed';
     document.body.appendChild(container);
   }
   const el = document.createElement('div');
