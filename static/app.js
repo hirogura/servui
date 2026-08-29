@@ -2400,7 +2400,7 @@ async function openServex() {
       showStatus('servEXをインストール中... ターミナルで進捗を確認できます。', 'info');
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'cd /tmp && git clone https://github.com/hirogura/servex.git && cd servex && sudo bash install-servex.sh\n';
+          const installCmd = 'cd /tmp && sudo git clone https://github.com/hirogura/servex.git && cd servex && sudo bash install-servex.sh && cd /tmp && sudo rm -rf /tmp/servex\n';
           ws.send(JSON.stringify({ type: 'input', data: installCmd }));
         } else {
           showStatus('ターミナルに接続できません', 'error');
