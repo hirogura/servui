@@ -1451,7 +1451,7 @@ function openDiskCreateModal(diskName, totalBytes, freeBytes) {
 
   const freeMb = Math.floor(freeBytes / (1024 * 1024));
   document.getElementById('disk-create-info').textContent = `/dev/${diskName} - 空き領域: ${formatBytesJS(freeBytes)}`;
-  document.getElementById('disk-create-size').value = Math.min(freeMb, 1024);
+  document.getElementById('disk-create-size').value = freeMb;
   document.getElementById('disk-create-size').max = freeMb;
   document.getElementById('disk-create-size-max').textContent = `${freeMb} MB`;
   document.getElementById('disk-create-fstype').value = 'ext4';
