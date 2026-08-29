@@ -2383,6 +2383,35 @@ function showStatus(msg, type) {
   setTimeout(() => el.remove(), 4000);
 }
 
+// --- servEX ---
+async function openServex() {
+  try {
+    const resp = await fetch('/api/servex/status');
+    const data = await resp.json();
+
+    if (data.installed && data.url) {
+      window.open(data.url, '_blank');
+    } else if (data.installed) {
+      switchTab('terminal');
+      showStatus('servEXはインストール済みです。URLを取得できませんでした。', 'info');
+    } else {
+      if (!confirm('servEXはまだインストールされていません。\nインストールしますか？')) return;
+      switchTab('terminal');
+      showStatus('servEXをインストール中... ターミナルで進捗を確認できます。', 'info');
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const installCmd = 'cd /tmp && git clone https://github.com/hirogura/servex.git && cd servex && sudo bash install-servex.sh\n';
+          ws.send(JSON.stringify({ type: 'input', data: installCmd }));
+        } else {
+          showStatus('ターミナルに接続できません', 'error');
+        }
+      }, 500);
+    }
+  } catch (e) {
+    showStatus(`servEX確認エラー: ${e.message}`, 'error');
+  }
+}
+
 // --- Selfcode ---
 async function openSelfcode() {
   try {
