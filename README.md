@@ -49,7 +49,10 @@ tailscale up
 ### Ubuntu 26.04 Serverインストール直後なら下記でアップデートやTailscale、serv-UIまで一気に（推奨）
 
 ```bash
-wget -qO ubsv.sh https://raw.githubusercontent.com/hirogura/servui/main/ubsv.sh
+# 1. スクリプトをダウンロード
+wget https://raw.githubusercontent.com/hirogura/servui/main/ubsv.sh
+
+# 2. 実行
 bash ubsv.sh
 ```
 
