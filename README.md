@@ -53,6 +53,15 @@ wget -qO ubsv.sh https://raw.githubusercontent.com/hirogura/servui/main/ubsv.sh
 bash ubsv.sh
 ```
 
+`ubsv.sh` は以下を自動で実行します:
+
+1. タイムゾーンを JST (`Asia/Tokyo`) に設定
+2. `apt update` / `apt upgrade` でパッケージを最新化（keyboard-configuration等のdebconf質問は自動回答でスキップ）
+3. Tailscale のインストール
+4. Tailscale 接続（authkey があれば入力して自動接続、なければブラウザ認証）
+5. git インストールと、serv-UIリポジトリのクローン
+6. `setup.sh` による serv-UI のインストール
+
 ### 自動インストール (通常)
 
 ```bash

@@ -15,6 +15,8 @@ ask_yn() {
     done
 }
 
+sudo timedatectl set-timezone Asia/Tokyo
+
 sudo apt update
 
 # console-setup / keyboard-configuration のdebconf質問を事前回答で回避
