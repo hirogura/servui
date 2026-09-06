@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>serv-UI</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <div class="logo-info">
+        <span class="logo-text">serv-UI<span class="logo-version">v.1.8.2</span></span>
+        <span class="logo-hostname" id="sidebar-hostname">...</span>
+      </div>
+    </div>
+    <ul class="nav-links">
+      <li class="active" data-tab="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span>ダッシュボード</span>
+      </li>
+      <li data-tab="services">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <span>サービス管理</span>
+      </li>
+      <li data-tab="packages">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        <span>パッケージ</span>
+      </li>
+      <li data-tab="ports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
+        <span>公開ポート</span>
+      </li>
+      <li data-tab="terminal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <span>ターミナル</span>
+      </li>
+      <li data-tab="wifi">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        <span>Wi-Fi</span>
+      </li>
+      <li data-tab="disks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        <span>ディスク</span>
+      </li>
+      <li data-tab="grub">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <span>GRUB編集</span>
+      </li>
+      <li data-tab="servex" onclick="openServex()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="7" y1="10" x2="17" y2="10"/></svg>
+        <span>servEX</span>
+      </li>
+      <li data-tab="selfcode" onclick="openSelfcode()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>selfcode</span>
+      </li>
+      <li data-tab="easylxd" onclick="openEasyLXD()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span>Easy LXD</span>
+      </li>
+      <li data-tab="vmmanager" onclick="openVMManager()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
+        <span>VM Manager</span>
+      </li>
+      <li data-tab="backup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M23 3H1v5h22z"/><path d="M10 12h4"/></svg>
+        <span>バックアップ/復元</span>
+      </li>
+      <li data-tab="timeshift">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>Timeshift</span>
+      </li>
+      <li data-tab="fleet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>serv-UI一括管理</span>
+      </li>
+    </ul>
+    <div class="sidebar-footer">
+      <button class="btn-sidebar" onclick="refreshCurrentTab()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        <span>serv-UIリフレッシュ</span>
+      </button>
+      <button class="btn-sidebar btn-restart" onclick="restartServUI()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        <span>serv-UI再起動</span>
+      </button>
+      <button class="btn-sidebar btn-update" onclick="updateServUI()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="8"/><polyline points="8 12 12 8 16 12"/></svg>
+        <span>serv-UIアップデート</span>
+      </button>
+      <button class="btn-sidebar btn-reboot" onclick="rebootSystem()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        <span>PC再起動</span>
+      </button>
+      <button class="btn-sidebar btn-shutdown" onclick="shutdownSystem()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        <span>PCシャットダウン</span>
+      </button>
+    </div>
+  </nav>
+
+  <main class="content">
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tab-content active">
+      <h1>ダッシュボード</h1>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="13" y2="13"/></svg>
+            CPU使用率
+          </div>
+          <div class="stat-value" id="cpu-usage">--</div>
+          <div class="stat-bar"><div class="stat-bar-fill" id="cpu-bar"></div></div>
+          <div class="stat-detail" id="cpu-temp-detail" style="margin-bottom:0.25rem;font-weight:600;"></div>
+          <div class="stat-detail" id="cpu-detail"></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="12" x2="6" y2="12.01"/><line x1="10" y1="12" x2="10" y2="12.01"/><line x1="14" y1="12" x2="14" y2="12.01"/><line x1="18" y1="12" x2="18" y2="12.01"/></svg>
+            メモリ使用量
+          </div>
+          <div class="stat-value" id="mem-usage">--</div>
+          <div class="stat-bar"><div class="stat-bar-fill" id="mem-bar"></div></div>
+          <div class="stat-detail" id="mem-detail"></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            ディスク使用量
+          </div>
+          <div class="stat-value" id="disk-usage">--</div>
+          <div class="stat-bar"><div class="stat-bar-fill" id="disk-bar"></div></div>
+          <div class="stat-detail" id="disk-detail"></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            システム情報
+          </div>
+          <div class="stat-detail" id="sys-info" style="white-space:pre-line;font-size:0.78rem;line-height:1.6;"></div>
+        </div>
+      </div>
+      <h2>トッププロセス</h2>
+      <table class="proc-table">
+        <thead>
+          <tr><th>PID</th><th>プロセス名</th><th>CPU %</th><th>MEM %</th><th>ユーザー</th></tr>
+        </thead>
+        <tbody id="proc-list"></tbody>
+      </table>
+    </section>
+
+    <!-- Services -->
+    <section id="tab-services" class="tab-content">
+      <h1>サービス管理</h1>
+      <div class="search-bar">
+        <input type="text" id="service-search" placeholder="サービス名で検索..." oninput="filterServices()">
+      </div>
+      <table class="proc-table">
+        <thead>
+          <tr><th>サービス名</th><th>ステータス</th><th>サブ</th><th>操作</th></tr>
+        </thead>
+        <tbody id="service-list"></tbody>
+      </table>
+      <div id="service-detail" class="service-detail" style="display:none;">
+        <h3 id="service-detail-name"></h3>
+        <pre id="service-detail-output"></pre>
+        <button class="btn btn-close" onclick="document.getElementById('service-detail').style.display='none'">閉じる</button>
+      </div>
+    </section>
+
+    <!-- Packages -->
+    <section id="tab-packages" class="tab-content">
+      <h1>パッケージ管理</h1>
+      <div class="package-actions">
+        <button class="btn btn-primary" onclick="checkUpdates()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          アップデート確認
+        </button>
+        <button class="btn btn-danger" id="btn-upgrade-all" onclick="upgradeAll()" style="display:none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          全パッケージ更新
+        </button>
+        <button class="btn btn-secondary" onclick="fixPackages()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          依存関係の修復
+        </button>
+        <button class="btn btn-danger" onclick="forceUpgradeAll()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+          強制一括更新
+        </button>
+        <button class="btn btn-secondary" onclick="autoremovePackages()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          不要パッケージ削除
+        </button>
+      </div>
+      <div id="package-status" class="status-msg"></div>
+      <div id="package-list-container">
+        <p class="muted">「アップデート確認」ボタンをクリックして、更新可能なパッケージを確認してください。</p>
+      </div>
+    </section>
+
+    <!-- Ports -->
+    <section id="tab-ports" class="tab-content">
+      <h1>リッスン中のサービス一覧</h1>
+      <div class="package-actions">
+        <button class="btn btn-primary" onclick="scanPorts()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          サービスを検出
+        </button>
+      </div>
+      <div id="ports-status" class="status-msg"></div>
+      <div id="ports-list-container">
+        <p class="muted">「サービスを検出」ボタンをクリックして、リッスン中のサービスを確認してください。</p>
+      </div>
+    </section>
+
+    <!-- Terminal -->
+    <section id="tab-terminal" class="tab-content">
+      <div class="terminal-header">
+        <h1>ターミナル<span id="terminal-cwd-label" class="muted" style="font-size:0.8rem;margin-left:0.75rem;font-weight:400;"></span></h1>
+        <button class="btn btn-secondary" onclick="connectTerminal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          接続
+        </button>
+      </div>
+      <div id="terminal-container"></div>
+    </section>
+
+    <!-- Wi-Fi -->
+    <section id="tab-wifi" class="tab-content">
+      <div class="terminal-header">
+        <h1>Wi-Fi設定</h1>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="scanWifi()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            Wi-Fiスキャン
+          </button>
+          <button class="btn btn-secondary" id="btn-wifi-toggle" onclick="toggleWifi()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+            <span id="wifi-toggle-text">Wi-Fi機能切替</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="wifi-status-msg" class="status-msg"></div>
+
+      <!-- Current Connected Network Card -->
+      <div id="wifi-current-card" class="stat-card wifi-card" style="display:none;margin-bottom:1.5rem;">
+        <div class="stat-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+          現在の接続
+        </div>
+        <div class="wifi-current-info">
+          <div>
+            <div class="wifi-ssid-title" id="wifi-current-ssid">--</div>
+            <div class="stat-detail" id="wifi-current-detail">--</div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-sm btn-danger" onclick="disconnectWifi()">切断</button>
+            <button class="btn btn-sm btn-secondary" onclick="forgetWifi()">設定削除</button>
+          </div>
+        </div>
+      </div>
+
+      <h2>利用可能なWi-Fiネットワーク</h2>
+      <div id="wifi-networks-container">
+        <p class="muted">「Wi-Fiスキャン」ボタンをクリックして周囲のネットワークを検索してください。</p>
+      </div>
+
+      <!-- Wi-Fi Connect Modal -->
+      <div id="wifi-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3 id="wifi-modal-title">Wi-Fiに接続</h3>
+          <p id="wifi-modal-subtitle" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group" id="wifi-pwd-group">
+            <label for="wifi-password">パスワード</label>
+            <div class="pwd-input-wrap">
+              <input type="password" id="wifi-password" placeholder="ネットワークのパスワードを入力" onkeydown="if(event.key==='Enter')submitWifiConnect()">
+              <button type="button" class="btn-pwd-toggle" onclick="togglePwdVisibility()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div id="wifi-modal-status" class="status-msg"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeWifiModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-wifi-connect-submit" onclick="submitWifiConnect()">接続</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Disks -->
+    <section id="tab-disks" class="tab-content">
+      <div class="terminal-header">
+        <h1>ディスク情報</h1>
+        <button class="btn btn-primary" onclick="loadDisks()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          ディスク情報更新
+        </button>
+      </div>
+      <div id="disk-status-msg" class="status-msg"></div>
+      <div id="disks-container">
+        <p class="muted"><span class="spinner"></span> ディスク情報を取得中...</p>
+      </div>
+
+      <!-- Mount Modal -->
+      <div id="disk-mount-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3 id="disk-mount-title">パーティションをマウント</h3>
+          <p id="disk-mount-device" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="disk-mount-point">マウント先パス</label>
+            <input type="text" id="disk-mount-point" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" style="margin-top:0.75rem;">
+            <label>マウント種別</label>
+            <div style="display:flex;gap:1rem;margin-top:0.5rem;">
+              <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+                <input type="radio" name="disk-mount-type" value="temp" checked> 一時的（再起動後に解除）
+              </label>
+              <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+                <input type="radio" name="disk-mount-type" value="persist"> 永続的（/etc/fstabに追加）
+              </label>
+            </div>
+          </div>
+          <div id="disk-mount-persist-warn" style="display:none;margin-top:0.75rem;padding:0.6rem;background:var(--warning-soft);border-radius:6px;font-size:0.8rem;color:var(--warning);">
+            永続マウントは /etc/fstab にエントリを追加します。マウント先パスやファイルシステムタイプをよく確認してください。
+          </div>
+          <div id="disk-mount-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskMountModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-disk-mount-submit" onclick="submitDiskMount()">マウント</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create Partition Modal -->
+      <div id="disk-create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>パーティションを作成</h3>
+          <p id="disk-create-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="disk-create-size">サイズ (MB)</label>
+            <input type="number" id="disk-create-size" min="8" style="width:100%;margin-top:0.25rem;">
+            <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">
+              <span>8 MB</span>
+              <span id="disk-create-size-max"></span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="disk-create-fstype">ファイルシステム</label>
+            <select id="disk-create-fstype" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="ext4">ext4</option>
+              <option value="ext3">ext3</option>
+              <option value="xfs">xfs</option>
+              <option value="btrfs">btrfs</option>
+              <option value="vfat">FAT32 (vfat)</option>
+              <option value="swap">swap</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="disk-create-label">ラベル名 (任意)</label>
+            <input type="text" id="disk-create-label" maxlength="16" placeholder="例: data1 (最大16文字)" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" id="disk-create-mount-group">
+            <label for="disk-create-mount">マウント先パス (任意)</label>
+            <input type="text" id="disk-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" id="disk-create-persistent-group">
+            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+              <input type="checkbox" id="disk-create-persistent"> 永続マウント（/etc/fstabに追加）
+            </label>
+            <div id="disk-create-persistent-warn" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--warning-soft);border-radius:6px;font-size:0.78rem;color:var(--warning);">
+              永続マウントは /etc/fstab にエントリを追加します。再起動後も自動的にマウントされます。
+            </div>
+          </div>
+          <div id="disk-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskCreateModal()">キャンセル</button>
+            <button class="btn btn-success" id="btn-disk-create-submit" onclick="submitDiskCreate()">作成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Extend Partition Modal -->
+      <div id="disk-extend-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>パーティションを拡張</h3>
+          <p id="disk-extend-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div style="padding:0.6rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1rem;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">現在のサイズ</span>
+              <span id="disk-extend-current"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">最大拡張可能</span>
+              <span id="disk-extend-max" class="text-success"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--text-muted);">拡張後のサイズ</span>
+              <span id="disk-extend-after" style="font-weight:600;"></span>
+            </div>
+          </div>
+          <div id="disk-extend-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeDiskExtendModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-disk-extend-submit" onclick="submitDiskExtend()">拡張</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create LV Modal -->
+      <div id="lv-create-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>論理ボリュームを作成</h3>
+          <p id="lv-create-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div class="form-group">
+            <label for="lv-create-name">LV名</label>
+            <input type="text" id="lv-create-name" placeholder="data-lv" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group">
+            <label for="lv-create-size">サイズ</label>
+            <input type="text" id="lv-create-size" placeholder="10G" style="width:100%;margin-top:0.25rem;">
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">例: 500M, 10G, 1.5T</div>
+          </div>
+          <div class="form-group">
+            <label for="lv-create-fstype">ファイルシステム</label>
+            <select id="lv-create-fstype" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="ext4">ext4</option>
+              <option value="ext3">ext3</option>
+              <option value="xfs">xfs</option>
+              <option value="btrfs">btrfs</option>
+              <option value="swap">swap</option>
+            </select>
+          </div>
+          <div class="form-group" id="lv-create-mount-group">
+            <label for="lv-create-mount">マウント先パス (任意)</label>
+            <input type="text" id="lv-create-mount" placeholder="/mnt/data" style="width:100%;margin-top:0.25rem;">
+          </div>
+          <div class="form-group" id="lv-create-persistent-group">
+            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;">
+              <input type="checkbox" id="lv-create-persistent"> 永続マウント（/etc/fstabに追加）
+            </label>
+            <div id="lv-create-persistent-warn" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--warning-soft);border-radius:6px;font-size:0.78rem;color:var(--warning);">
+              永続マウントは /etc/fstab にエントリを追加します。再起動後も自動的にマウントされます。
+            </div>
+          </div>
+          <div id="lv-create-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeLvCreateModal()">キャンセル</button>
+            <button class="btn btn-success" id="btn-lv-create-submit" onclick="submitLvCreate()">作成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resize LV Modal -->
+      <div id="lv-resize-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-card">
+          <h3>論理ボリュームを拡張</h3>
+          <p id="lv-resize-info" class="muted" style="margin-bottom:1rem;"></p>
+          <div style="padding:0.6rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1rem;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.3rem;">
+              <span style="color:var(--text-muted);">現在のサイズ</span>
+              <span id="lv-resize-current"></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--text-muted);">VG空き領域</span>
+              <span id="lv-resize-free" class="text-success"></span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="lv-resize-size">新しいサイズ (例: 30G, +10G)</label>
+            <input type="text" id="lv-resize-size" placeholder="30G" style="width:100%;margin-top:0.25rem;">
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">絶対値(30G) or 相対値(+10G) を指定</div>
+          </div>
+          <div id="lv-resize-status" class="status-msg" style="margin-top:0.75rem;"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeLvResizeModal()">キャンセル</button>
+            <button class="btn btn-primary" id="btn-lv-resize-submit" onclick="submitLvResize()">拡張</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GRUB -->
+    <section id="tab-grub" class="tab-content">
+      <div class="terminal-header">
+        <h1>GRUB編集</h1>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btn-grub-next-menu" onclick="armNextBootMenu()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            次回PC起動時にGRUBメニューを表示
+          </button>
+          <button class="btn btn-secondary" onclick="loadGrub()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            再読み込み
+          </button>
+        </div>
+      </div>
+      <div id="grub-status-msg" class="status-msg"></div>
+
+      <h2>現在のGRUB設定</h2>
+      <div id="grub-settings-container"><p class="muted"><span class="spinner"></span> 読み込み中...</p></div>
+
+      <h2>GRUBエントリー一覧</h2>
+      <p class="muted" style="margin-bottom:0.6rem;">出所: <span class="text-success">custom</span> = 40_custom由来（削除可能） / <span class="text-accent">auto</span> = 自動生成（削除不可）</p>
+      <div id="grub-entries-container"><p class="muted"><span class="spinner"></span> 読み込み中...</p></div>
+
+      <div id="grub-stale-backups" class="status-msg show error" style="display:none;margin-top:1rem;"></div>
+
+      <h2>ISOループブートエントリー追加</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div class="form-group">
+          <label for="grub-part-select">パーティション / 論理ボリューム</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="grub-part-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-primary" onclick="scanGrubIsos()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              ISOを検索
+            </button>
+          </div>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.3rem;">ISOファイルが置かれたパーティションを選択してください（⚠は推奨ファイルシステム外）</div>
+        </div>
+        <div id="grub-iso-list"></div>
+        <div id="grub-add-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;">
+          <button class="btn btn-success" id="btn-grub-add" onclick="submitGrubAdd()" style="display:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            選択したISOからエントリーを追加
+          </button>
+        </div>
+      </div>
+
+      <h2>Ubuntu ISOダウンロード</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">releases.ubuntu.comからUbuntuのISOイメージを選択してダウンロードします（/iso に保存）。</p>
+        <div class="form-group">
+          <label for="ubuntu-version-select">バージョン</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="ubuntu-version-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-secondary" id="btn-ubuntu-files" onclick="loadUbuntuFiles()" disabled>ファイル検索</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="ubuntu-file-select">ISOファイル</label>
+          <select id="ubuntu-file-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">バージョンを選択して「ファイル検索」を押してください</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-top:0.75rem;">
+          <label for="grub-iso-dl-url">または直接URLを入力</label>
+          <input type="text" id="grub-iso-dl-url" placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+        </div>
+        <div id="grub-iso-dl-progress" style="display:none;margin-bottom:0.75rem;">
+          <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);height:12px;overflow:hidden;">
+            <div id="grub-iso-dl-progress-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.3s;"></div>
+          </div>
+          <div id="grub-iso-dl-progress-text" style="font-size:0.72rem;color:var(--text-muted);margin-top:0.3rem;"></div>
+        </div>
+        <div id="grub-iso-dl-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;">
+          <a class="btn btn-secondary" href="https://releases.ubuntu.com/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Ubuntuリリースページ確認
+          </a>
+          <button class="btn btn-primary" id="btn-grub-iso-dl" onclick="downloadUbuntuIso()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ダウンロード
+          </button>
+          <button class="btn btn-secondary" id="btn-grub-iso-dl-cancel" onclick="cancelIsoDownload()" disabled>キャンセル</button>
+        </div>
+      </div>
+
+      <h2>EFIブートエントリー（参考）</h2>
+      <div id="grub-efi-container"><p class="muted">--</p></div>
+    </section>
+
+    <!-- Backup / Restore -->
+    <section id="tab-backup" class="tab-content">
+      <h1>バックアップ/復元</h1>
+      <div id="backup-status-msg" class="status-msg"></div>
+
+      <h2>この機能について</h2>
+      <div class="stat-card">
+        <ul class="backup-notes">
+          <li><strong>パーティションのみ対応</strong>です（LVM は非対応）。</li>
+          <li><strong>保存用パーティション</strong>を用意し、<strong>/iso</strong> にマウントしておく必要があります。</li>
+          <li><strong>/iso</strong> 内の Clonezilla Live ISO を GRUB ループバックブートで起動するため、インストール作業は不要です。</li>
+          <li>実行すると自動的に再起動し、Clonezilla Live が処理を行います（完了後も自動で再起動します）。</li>
+          <li>Secure Boot が有効だと起動できないため、無効化しておく必要があります。</li>
+        </ul>
+        <div id="backup-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>
+      </div>
+
+      <h2>Clonezilla ISOダウンロード</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">SourceForgeからClonezilla LiveのISOイメージを選択してダウンロードします（/iso に保存）。</p>
+        <div class="form-group">
+          <label for="cz-version-select">バージョン</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="cz-version-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-secondary" id="btn-cz-files" onclick="loadClonezillaFiles()" disabled>ファイル検索</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="cz-file-select">ISOファイル</label>
+          <select id="cz-file-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">バージョンを選択して「ファイル検索」を押してください</option>
+          </select>
+        </div>
+        <div id="cz-dl-progress" style="display:none;margin-bottom:0.75rem;">
+          <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);height:12px;overflow:hidden;">
+            <div id="cz-dl-progress-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.3s;"></div>
+          </div>
+          <div id="cz-dl-progress-text" style="font-size:0.72rem;color:var(--text-muted);margin-top:0.3rem;"></div>
+        </div>
+        <div id="cz-dl-status" class="status-msg"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;">
+          <a class="btn btn-secondary" href="https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            SourceForgeページ確認
+          </a>
+          <button class="btn btn-primary" id="btn-cz-dl" onclick="downloadClonezillaIso()" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ダウンロード
+          </button>
+          <button class="btn btn-secondary" id="btn-cz-dl-cancel" onclick="cancelClonezillaDownload()" disabled>キャンセル</button>
+        </div>
+      </div>
+
+      <h2>バックアップ</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">現在のシステムを保存先パーティションにバックアップします。</p>
+        <div class="form-group">
+          <label for="backup-dest-select">保存先パーティション</label>
+          <select id="backup-dest-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">読み込み中...</option>
+          </select>
+        </div>
+        <button class="btn btn-success" id="btn-backup-run" onclick="runBackup()" disabled>
+          バックアップ開始
+        </button>
+      </div>
+
+      <h2>復元</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">選択したバックアップイメージでシステムを復元します。<span class="text-warn">⚠ 現在のシステムは上書きされます。</span></p>
+        <div class="form-group">
+          <label for="restore-src-select">バックアップイメージがあるパーティション</label>
+          <div style="display:flex;gap:0.5rem;margin-top:0.25rem;">
+            <select id="restore-src-select" style="flex:1;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+              <option value="">読み込み中...</option>
+            </select>
+            <button class="btn btn-secondary" id="btn-restore-scan" onclick="loadRestoreImages()" disabled>イメージ検索</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="restore-img-select">復元するバックアップイメージ</label>
+          <select id="restore-img-select" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;" disabled>
+            <option value="">パーティションを選択して「イメージ検索」を押してください</option>
+          </select>
+        </div>
+        <button class="btn btn-danger" id="btn-restore-run" onclick="runRestore()" disabled>
+          復元開始
+        </button>
+      </div>
+    </section>
+
+    <!-- Timeshift -->
+    <section id="tab-timeshift" class="tab-content">
+      <h1>Timeshift</h1>
+      <div id="timeshift-status-msg" class="status-msg"></div>
+
+      <h2>この機能について</h2>
+      <div class="stat-card">
+        <ul class="backup-notes">
+          <li><strong>rsync モード</strong>と <strong>btrfs モード</strong>の両方に対応しています。</li>
+          <li>スナップショットは手動でのみ作成します（スケジュール機能は無効です）。</li>
+          <li>スナップショットの復元は、再起動後に実行されます。</li>
+        </ul>
+        <div id="timeshift-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>
+      </div>
+
+      <h2>セットアップ</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">
+          Timeshift をインストールします。
+        </p>
+        <button class="btn btn-primary" id="btn-timeshift-install" onclick="installTimeshift()" disabled>
+          Timeshiftをインストール
+        </button>
+      </div>
+
+      <h2>スナップショット作成</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">現在のシステムのスナップショットを作成します。</p>
+        <div class="form-group">
+          <label for="timeshift-comment">コメント（任意）</label>
+          <input type="text" id="timeshift-comment" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);" placeholder="例: インストール後のクリーン状態">
+        </div>
+        <div class="form-group">
+          <label>除外フォルダ</label>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:1rem;align-items:start;">
+            <div>
+              <p class="muted" style="margin:0 0 0.4rem;font-size:0.8rem;">設定中の除外フォルダ一覧:</p>
+              <div id="timeshift-exclude-list" style="max-height:180px;overflow-y:auto;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);min-height:3.5rem;">
+                <p class="muted" style="font-size:0.85rem;margin:0;">読み込み中...</p>
+              </div>
+            </div>
+            <div>
+              <p class="muted" style="margin:0 0 0.4rem;font-size:0.8rem;">除外パスの追加:</p>
+              <div style="display:flex;gap:0.5rem;align-items:center;">
+                <input type="text" id="timeshift-new-exclude" style="flex:1;min-width:0;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);color:var(--text);font-family:monospace;font-size:0.85rem;" placeholder="/home/user/Downloads/**" onkeydown="if(event.key==='Enter'){event.preventDefault();addTimeshiftExclude();}">
+                <button type="button" class="btn btn-primary" id="btn-timeshift-add-exclude" onclick="addTimeshiftExclude()" style="white-space:nowrap;padding:0.5rem 0.9rem;font-size:0.85rem;">追加</button>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:0.35rem;margin-top:0.5rem;align-items:center;">
+                <span class="muted" style="font-size:0.75rem;">テンプレート:</span>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/opt/lxd-pool/**')" title="LXD コンテナのストレージを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/opt/lxd-pool/**</button>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/vm')" title="仮想マシンのディスクイメージを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/vm</button>
+                <button type="button" class="btn btn-secondary" onclick="addTimeshiftExcludePath('/root/.cache/**')" title="root のキャッシュを除外" style="padding:0.25rem 0.6rem;font-size:0.75rem;font-family:monospace;">/root/.cache/**</button>
+              </div>
+              <p class="muted" style="margin:0.4rem 0 0;font-size:0.75rem;">※ 「/パス/**」のように指定するとフォルダ配下全体が除外されます</p>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;">
+          <button class="btn btn-primary" id="btn-timeshift-save-excludes" onclick="saveTimeshiftExcludes()" disabled>
+            除外設定を保存
+          </button>
+          <button class="btn btn-success" id="btn-timeshift-create" onclick="createSnapshot()" disabled>
+            スナップショット作成
+          </button>
+        </div>
+      </div>
+
+      <h2>スナップショット一覧</h2>
+      <div class="stat-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+          <p class="muted" style="margin:0;">作成済みのスナップショットの一覧です。</p>
+          <button class="btn btn-secondary" id="btn-timeshift-refresh" onclick="loadTimeshiftSnapshots()" disabled style="font-size:0.8rem;padding:0.3rem 0.7rem;">
+            更新
+          </button>
+        </div>
+        <div id="timeshift-snapshot-list">
+          <p class="muted">読み込み中...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- serv-UI Fleet (Bulk Management) -->
+    <section id="tab-fleet" class="tab-content">
+      <h1>serv-UI一括管理ページ</h1>
+      <div id="fleet-status-msg" class="status-msg"></div>
+
+      <h2>ピン留め</h2>
+      <div id="fleet-pinned-container">
+        <p class="muted">ピン留めされたserv-UIはありません。下の「serv-UI自動検出」で検出したサーバーをピン留めすると、ここに固定表示されます。</p>
+      </div>
+
+      <h2>更新設定</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label for="fleet-interval-select">更新間隔</label>
+            <select id="fleet-interval-select" onchange="saveFleetSettings()" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="5000">5秒</option>
+              <option value="10000">10秒</option>
+              <option value="15000">15秒</option>
+              <option value="30000">30秒</option>
+              <option value="60000">1分</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label for="fleet-hidden-select">タブが非表示の時は更新を停止</label>
+            <select id="fleet-hidden-select" onchange="saveFleetSettings()" style="width:100%;margin-top:0.25rem;padding:0.5rem;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:0.85rem;">
+              <option value="off">無効</option>
+              <option value="on">有効</option>
+            </select>
+          </div>
+        </div>
+        <p class="muted" style="font-size:0.72rem;margin-top:0.6rem;margin-bottom:0;">ピン留めされたserv-UIの状態を指定した間隔で自動更新します。設定はこのブラウザに保存されます。</p>
+      </div>
+
+      <h2>serv-UI自動検出</h2>
+      <div class="stat-card" style="margin-bottom:1rem;">
+        <p class="muted" style="margin-bottom:0.75rem;">Tailnet内で稼働中のserv-UIを検出し、一覧表示します。ホスト名をクリックすると、そのserv-UIを新しいタブで開きます。</p>
+        <button class="btn btn-primary" id="btn-fleet-detect" onclick="detectFleet()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          serv-UI自動検出
+        </button>
+      </div>
+      <div id="fleet-detect-container">
+        <p class="muted">「serv-UI自動検出」ボタンをクリックしてTailnet内のserv-UIを検索してください。</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v=29"></script>
+</body>
+</html>

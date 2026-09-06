@@ -1,0 +1,174 @@
+# serv-UI
+
+Webベースのサーバー管理ツール。Tailscale内のHTTPS経由でアクセス可能。
+
+## 機能
+
+| 機能 | 説明 |
+|------|------|
+| ダッシュボード | CPU・温度・メモリ・ディスク使用率、トッププロセス、システム情報を表示 |
+| サービス管理 | systemdサービスの起動・停止・再起動・ステータス確認 |
+| パッケージ管理 | aptアップデート確認・一括更新・個別更新・依存関係の修復 |
+| ターミナル | ブラウザ上のWebターミナル (ユーザーアカウントで~に接続) |
+| Wi-Fi管理 | 周囲のWi-Fiスキャン・接続・切断・設定管理 |
+| ディスク管理 | パーティションのマウント（一時/永続）・作成・拡張・削除、LVM (VG/LV) の作成・リサイズ・削除 |
+| GRUB編集 | GRUBエントリーの一覧・削除、ISOループブートエントリーの追加、WebからのISOダウンロード（/isoへwget保存、進捗表示・キャンセル対応）、次回起動時のみGRUBメニューを表示 |
+| selfcode / Easy LXD / VM Manager | 連携アプリの導入と起動。未インストールの場合は確認ダイアログ表示後にターミナルでインストール、インストール済みならサイトを新しいタブで開く |
+| バックアップ/復元 | /iso 内の Clonezilla Live ISO をループバックブートして無人実行するパーティション単位のバックアップ・復元 |
+| serv-UI一括管理 | Tailnet内で稼働中のserv-UIを自動検出して一覧表示。ピン留めしたサーバー（ホスト名/CPU使用率・温度/メモリ使用率/ディスク使用量）をページ上部に固定表示し、ホスト名クリックで新しいタブで開く |
+| システム操作 | serv-UIの再起動・アップデート、PC本体の再起動・シャットダウン |
+
+![ロゴ画像](image-ph.png)
+
+### バックアップ/復元について
+
+`/iso` に保存した Clonezilla Live ISO を GRUB ループバックブートで起動する無人バックアップ/復元機能です（cloneauto等のインストールは不要）。
+
+- **パーティションのみ対応**（LVMは非対応）
+- 事前に**保存用パーティション**を用意し、**`/iso` にマウント**しておく必要があります
+- `clonezilla-live-*.iso` を `/iso` 直下に配置しておきます
+- 実行すると `/etc/grub.d/40_custom` に無人実行用エントリを生成し、`grub-reboot` で次回起動のみ Clonezilla Live を起動して処理を行います（完了後は自動で再起動し、通常起動に戻ります）
+- 初回実行時に `GRUB_DEFAULT=saved` へ自動変更されます
+- 復元では保存先パーティション内のバックアップイメージを選択できます
+- **Secure Boot非対応**のため、無効化しておく必要があります
+
+## インストール
+
+### 前提条件
+
+- Ubuntu Server (20.04+)
+- Tailscale がインストール済み
+
+```bash
+# Tailscale インストール (未インストールの場合)
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Tailscale 接続
+tailscale up
+```
+### Ubuntu 26.04 Serverインストール直後なら下記でアップデートやTailscale、serv-UIまで一気に（推奨）
+
+```bash
+# 1. スクリプトをダウンロード
+wget https://raw.githubusercontent.com/hirogura/servui/main/ubsv.sh
+
+# 2. 実行
+bash ubsv.sh
+```
+
+`ubsv.sh` は以下を自動で実行します:
+
+1. タイムゾーンを JST (`Asia/Tokyo`) に設定
+2. `apt update` / `apt upgrade` でパッケージを最新化（keyboard-configuration等のdebconf質問は自動回答でスキップ）
+3. Tailscale のインストール
+4. Tailscale 接続（authkey があれば入力して自動接続、なければブラウザ認証）
+5. git インストールと、serv-UIリポジトリのクローン
+6. `setup.sh` による serv-UI のインストール
+
+### 自動インストール (通常)
+
+```bash
+git clone https://github.com/hirogura/servui.git
+cd servui
+sudo bash setup.sh
+```
+
+オプション:
+
+```bash
+sudo bash setup.sh --branch test    # 指定ブランチからインストール (デフォルト: main)
+sudo bash setup.sh --no-restart     # デプロイのみ行い、再起動は手動で実施
+```
+
+スクリプトは以下を自動で実行します:
+
+1. Python 3 と依存パッケージのインストール
+2. `servui` ユーザーの作成
+3. sudoers の設定 (systemctl/aptコマンドをパスワードなしで実行可能)
+4. GitHub からリポジトリをクローンして `/opt/servui` にデプロイ
+5. systemd サービスの作成・起動
+6. `tailscale serve` の設定 (HTTPS:3355)
+
+### アクセス
+
+Tailscale ネットワーク内のブラウザから:
+
+```
+https://YOUR-TAILSCALE-HOSTNAME:3355
+```
+
+※LANからはアクセス不可。Tailscale内からのみアクセス可能。
+
+## アンインストール
+
+```bash
+git clone https://github.com/hirogura/servui.git
+cd servui
+sudo bash uninstall.sh
+```
+
+以下のものが削除されます:
+
+- systemd サービス (servui.service)
+- sudoers 設定 (/etc/sudoers.d/servui-systemctl)
+- アプリケーション (/opt/servui)
+- servui ユーザー
+- Tailscale serve 設定 (HTTPS:3355)
+
+## サービス管理
+
+```bash
+# ステータス
+systemctl status servui
+
+# 再起動
+sudo systemctl restart servui
+
+# ログ
+journalctl -u servui -f
+
+# 停止
+sudo systemctl stop servui
+```
+
+## セキュリティ
+
+- ポート3355は**Tailscale内のみ**で公開
+- LANからはアクセス不可 (`tailscale serve` が外部リクエストを拒否)
+- `servui` ユーザーによる権限分離と sudoers によるコマンド制御
+
+
+## アーキテクチャ
+
+```
+[ブラウザ (Tailscale内)]
+    │
+    ▼ HTTPS:3355
+[Tailscale Serve] ← TLS終端
+    │
+    ▼ HTTP:127.0.0.1:3355
+[FastAPI (serv-UI)]
+    │
+    ├── psutil (システム情報)
+    ├── systemctl (サービス管理)
+    ├── apt (パッケージ管理)
+    ├── lsblk / mount / LVM (ディスク管理)
+    ├── grub関連ファイル (GRUB編集)
+    ├── Clonezilla Live ISO ループバックブート (バックアップ/復元)
+    └── WebSocket (ターミナル)
+```
+
+## 開発
+
+```bash
+git clone https://github.com/hirogura/servui.git
+cd servui
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --host 127.0.0.1 --port 3355 --reload
+```
+
+## License
+
+[MIT](LICENSE)
