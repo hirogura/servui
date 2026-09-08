@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.8.2")
+app = FastAPI(title="serv-UI", version="1.9.0")
 
 
 @app.middleware("http")
@@ -1937,6 +1937,28 @@ async def vmmanager_status():
             if dns:
                 hostname = dns.rstrip(".")
                 url = f"https://{hostname}:8090/"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return {"installed": installed, "url": url}
+
+
+@app.get("/api/ddrescuegui/status")
+async def ddrescuegui_status():
+    """Check if ddrescueGUI is installed and return its URL."""
+    svc = await run_cmd("systemctl is-enabled ddrescuegui 2>/dev/null", timeout=5)
+    dir_check = await run_cmd("test -d /opt/ddrescuegui", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    url = None
+    if installed:
+        ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+        try:
+            data = json.loads(ts["stdout"])
+            dns = data.get("Self", {}).get("DNSName", "")
+            if dns:
+                hostname = dns.rstrip(".")
+                url = f"https://{hostname}:3327/"
         except (json.JSONDecodeError, KeyError):
             pass
 
