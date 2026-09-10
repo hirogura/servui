@@ -174,7 +174,9 @@ if [[ -d "$APP_DIR/.git" ]]; then
 else
   git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$TEMP_DIR"
   mkdir -p "$APP_DIR"
-  cp -r "$TEMP_DIR/"* "$APP_DIR/"
+  # Include dotfiles so .git is deployed too (/opt/servui becomes a git repo).
+  # TEMP_DIR is removed by the EXIT trap.
+  cp -a "$TEMP_DIR/." "$APP_DIR/"
 fi
 
 # --- Python venv ---

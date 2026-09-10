@@ -53,6 +53,7 @@ body {
   align-items: center;
   gap: 0.55rem;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .logo-mark {
@@ -108,6 +109,24 @@ body {
   list-style: none;
   padding: 0.5rem 0;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-active) transparent;
+}
+
+.nav-links::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nav-links::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: 3px;
+}
+
+.nav-links::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .nav-links li {
@@ -149,6 +168,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex-shrink: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-active) transparent;
 }
 
 .btn-sidebar {
