@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="1.9.3")
+app = FastAPI(title="serv-UI", version="1.9.4")
 
 
 @app.middleware("http")
@@ -59,6 +59,63 @@ def _sudo(cmd: str) -> str:
     if IS_ROOT:
         return cmd
     return f"sudo {cmd}"
+
+
+async def _get_json(req: Request) -> dict:
+    """Parse JSON body, returning 400 instead of 500 on malformed input."""
+    try:
+        data = await _get_json(req)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    return data
+
+
+_VALID_FSTYPES = frozenset({
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat", "ntfs", "swap",
+})
+
+
+def _validate_fstype(fstype: str) -> str:
+    """Allowlist check for mkfs fstype to prevent option/command injection."""
+    if fstype not in _VALID_FSTYPES:
+        raise HTTPException(status_code=400, detail=f"unsupported fstype: {fstype}")
+    return fstype
+
+
+def _validate_mount_point(mp: str) -> str:
+    """Mount points must be absolute paths without .. or control chars."""
+    if not mp or not mp.startswith("/"):
+        raise HTTPException(status_code=400, detail="mount_point must be an absolute path")
+    if ".." in mp.split("/") or any(ch in mp for ch in ("\n", "\r", "\x00", "'", '"', ";", "&", "|", "`", "$", "(", ")")):
+        raise HTTPException(status_code=400, detail="invalid mount_point")
+    return mp
+
+
+def _validate_device_name(name: str) -> str:
+    """Device/disk names like 'sda1' or full '/dev/sda1' paths."""
+    if not name:
+        raise HTTPException(status_code=400, detail="device is required")
+    short = name[5:] if name.startswith("/dev/") else name
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", short):
+        raise HTTPException(status_code=400, detail="invalid device name")
+    return short
+
+
+def _validate_lvm_name(name: str, field: str = "name") -> str:
+    if not name or not re.fullmatch(r"[A-Za-z0-9._+-]+", name):
+        raise HTTPException(status_code=400, detail=f"invalid {field}")
+    if name.startswith(("-", "+", ".")):
+        raise HTTPException(status_code=400, detail=f"invalid {field}")
+    return name
+
+
+def _validate_lv_size(size: str) -> str:
+    # e.g. 10G, 512M, +100%FREE, 50%VG
+    if not re.fullmatch(r"\+?\d+(?:\.\d+)?[KMGTPEkmgtpe]?%?(?:FREE|VG|PVS)?", size or ""):
+        raise HTTPException(status_code=400, detail="invalid size")
+    return size
 
 
 @app.get("/api/servex/status")
@@ -931,7 +988,7 @@ async def wifi_scan():
 @app.post("/api/wifi/connect")
 async def wifi_connect(req: Request):
     """Connect to a Wi-Fi network."""
-    data = await req.json()
+    data = await _get_json(req)
     ssid = data.get("ssid", "").strip()
     password = data.get("password", "").strip()
     bssid = data.get("bssid", "").strip()
@@ -939,20 +996,16 @@ async def wifi_connect(req: Request):
     if not ssid:
         raise HTTPException(status_code=400, detail="SSID is required")
 
-    safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-    safe_pwd = password.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-    safe_bssid = bssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`') if bssid else ""
-
-    if safe_pwd:
-        if safe_bssid:
-            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" password "{safe_pwd}" bssid "{safe_bssid}"')
+    if password:
+        if bssid:
+            cmd = _sudo(f'nmcli device wifi connect {shlex.quote(ssid)} password {shlex.quote(password)} bssid {shlex.quote(bssid)}')
         else:
-            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" password "{safe_pwd}"')
+            cmd = _sudo(f'nmcli device wifi connect {shlex.quote(ssid)} password {shlex.quote(password)}')
     else:
-        if safe_bssid:
-            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}" bssid "{safe_bssid}"')
+        if bssid:
+            cmd = _sudo(f'nmcli device wifi connect {shlex.quote(ssid)} bssid {shlex.quote(bssid)}')
         else:
-            cmd = _sudo(f'nmcli device wifi connect "{safe_ssid}"')
+            cmd = _sudo(f'nmcli device wifi connect {shlex.quote(ssid)}')
 
     res = await run_cmd(cmd, timeout=45)
     success = res["returncode"] == 0
@@ -965,19 +1018,19 @@ async def wifi_connect(req: Request):
 @app.post("/api/wifi/disconnect")
 async def wifi_disconnect(req: Request):
     """Disconnect currently connected Wi-Fi."""
-    data = await req.json()
+    data = await _get_json(req)
     ssid = data.get("ssid", "").strip()
     device = data.get("device", "").strip()
 
     if ssid:
-        safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-        res = await run_cmd(_sudo(f'nmcli connection down id "{safe_ssid}"'), timeout=15)
+        res = await run_cmd(_sudo(f'nmcli connection down id {shlex.quote(ssid)}'), timeout=15)
         if res["returncode"] == 0:
             return {"success": True, "message": f"{ssid} から切断しました"}
 
     if device:
-        safe_dev = device.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-        res = await run_cmd(_sudo(f'nmcli device disconnect "{safe_dev}"'), timeout=15)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", device):
+            raise HTTPException(status_code=400, detail="invalid device")
+        res = await run_cmd(_sudo(f'nmcli device disconnect {shlex.quote(device)}'), timeout=15)
         return {
             "success": res["returncode"] == 0,
             "message": res["stdout"].strip() or res["stderr"].strip(),
@@ -998,13 +1051,12 @@ async def wifi_disconnect(req: Request):
 @app.post("/api/wifi/forget")
 async def wifi_forget(req: Request):
     """Forget / delete a saved Wi-Fi connection profile."""
-    data = await req.json()
+    data = await _get_json(req)
     ssid = data.get("ssid", "").strip()
     if not ssid:
         raise HTTPException(status_code=400, detail="SSID is required")
 
-    safe_ssid = ssid.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-    res = await run_cmd(_sudo(f'nmcli connection delete id "{safe_ssid}"'), timeout=15)
+    res = await run_cmd(_sudo(f'nmcli connection delete id {shlex.quote(ssid)}'), timeout=15)
     return {
         "success": res["returncode"] == 0,
         "message": res["stdout"].strip() or res["stderr"].strip(),
@@ -1014,7 +1066,7 @@ async def wifi_forget(req: Request):
 @app.post("/api/wifi/toggle")
 async def wifi_toggle(req: Request):
     """Turn Wi-Fi radio on/off."""
-    data = await req.json()
+    data = await _get_json(req)
     enable = data.get("enable", True)
     cmd = _sudo("nmcli radio wifi on") if enable else _sudo("nmcli radio wifi off")
     res = await run_cmd(cmd, timeout=15)
@@ -1290,7 +1342,7 @@ async def disks_info():
 @app.post("/api/disks/mount")
 async def disks_mount(req: Request):
     """Mount a partition. Supports temporary or persistent (fstab) mount."""
-    data = await req.json()
+    data = await _get_json(req)
     device_name = data.get("device", "").strip()
     mount_point = data.get("mount_point", "").strip()
     persistent = data.get("persistent", False)
@@ -1299,48 +1351,54 @@ async def disks_mount(req: Request):
     if not device_name or not mount_point:
         raise HTTPException(status_code=400, detail="device and mount_point are required")
 
+    device_name = _validate_device_name(device_name)
+    mount_point = _validate_mount_point(mount_point)
+    if fstype:
+        _validate_fstype(fstype)
+
     # Build full device path
-    device_path = f"/dev/{device_name}" if not device_name.startswith("/dev/") else device_name
+    device_path = f"/dev/{device_name}"
 
     # Validate device exists
-    check = await run_cmd(f"test -b {device_path}", timeout=5)
+    check = await run_cmd(f"test -b {shlex.quote(device_path)}", timeout=5)
     if check["returncode"] != 0:
         return {"success": False, "message": f"デバイス {device_path} が見つかりません"}
 
     # Create mount point if it doesn't exist
-    await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
+    await run_cmd(_sudo(f"mkdir -p {shlex.quote(mount_point)}"), timeout=5)
 
     if persistent:
         # Get UUID for fstab
-        blkid = await run_cmd(f"blkid -s UUID -o value {device_path}", timeout=5)
+        blkid = await run_cmd(f"blkid -s UUID -o value {shlex.quote(device_path)}", timeout=5)
         uuid = blkid["stdout"].strip()
         if not uuid:
             return {"success": False, "message": "UUIDを取得できませんでした"}
 
         # Determine fstype for fstab if not provided
         if not fstype:
-            blkid_type = await run_cmd(f"blkid -s TYPE -o value {device_path}", timeout=5)
+            blkid_type = await run_cmd(f"blkid -s TYPE -o value {shlex.quote(device_path)}", timeout=5)
             fstype = blkid_type["stdout"].strip()
 
         if not fstype:
             return {"success": False, "message": "ファイルシステムタイプを取得できませんでした"}
+        _validate_fstype(fstype)
 
         # Check if already in fstab
-        fstab_check = await run_cmd(f"grep -q '{uuid}' /etc/fstab", timeout=5)
+        fstab_check = await run_cmd(f"grep -q {shlex.quote(uuid)} /etc/fstab", timeout=5)
         if fstab_check["returncode"] == 0:
             return {"success": False, "message": "このデバイスは既に/etc/fstabに登録されています"}
 
         # Add to fstab (options: defaults,nofail for safety)
         fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
         add_fstab = await run_cmd(
-            _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+            _sudo(f"echo {shlex.quote(fstab_line)} >> /etc/fstab"),
             timeout=10,
         )
         if add_fstab["returncode"] != 0:
             return {"success": False, "message": f"/etc/fstabへの追加に失敗しました: {add_fstab['stderr']}"}
 
         # Now mount it
-        mount_res = await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+        mount_res = await run_cmd(_sudo(f"mount {shlex.quote(device_path)} {shlex.quote(mount_point)}"), timeout=15)
         if mount_res["returncode"] != 0:
             return {"success": False, "message": f"マウントに失敗しました: {mount_res['stderr']}"}
 
@@ -1348,7 +1406,7 @@ async def disks_mount(req: Request):
 
     else:
         # Temporary mount
-        mount_res = await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+        mount_res = await run_cmd(_sudo(f"mount {shlex.quote(device_path)} {shlex.quote(mount_point)}"), timeout=15)
         if mount_res["returncode"] != 0:
             return {"success": False, "message": f"マウントに失敗しました: {mount_res['stderr']}"}
         return {"success": True, "message": f"一時マウントしました: {device_path} → {mount_point}"}
@@ -1358,7 +1416,7 @@ async def disks_mount(req: Request):
 async def disks_unmount(req: Request):
     """Unmount a partition. With force=True, use lazy unmount (umount -l)
     so busy mount points (e.g. open terminal cwd) can still be detached."""
-    data = await req.json()
+    data = await _get_json(req)
     device_name = data.get("device", "").strip()
     mount_point = data.get("mount_point", "").strip()
     force = bool(data.get("force", False))
@@ -1366,17 +1424,22 @@ async def disks_unmount(req: Request):
     if not device_name and not mount_point:
         raise HTTPException(status_code=400, detail="device or mount_point is required")
 
+    if device_name:
+        device_name = _validate_device_name(device_name)
+    if mount_point:
+        mount_point = _validate_mount_point(mount_point)
+
     target = mount_point if mount_point else f"/dev/{device_name}"
-    device_path = f"/dev/{device_name}" if not device_name.startswith("/dev/") else device_name
+    device_path = f"/dev/{device_name}" if device_name else ""
 
     # Unmount
     umount_opts = "-l" if force else ""
-    res = await run_cmd(_sudo(f"umount {umount_opts} {target}".strip()), timeout=30)
+    res = await run_cmd(_sudo(f"umount {umount_opts} {shlex.quote(target)}".strip()), timeout=30)
     if res["returncode"] != 0:
         return {"success": False, "message": f"アンマウントに失敗しました: {res['stderr']}"}
 
     # If there was a fstab entry, offer info (don't auto-remove for safety)
-    fstab_check = await run_cmd(f"grep -n '{device_path}\\|{mount_point}' /etc/fstab 2>/dev/null", timeout=5)
+    fstab_check = await run_cmd(f"grep -n -F {shlex.quote(device_path or mount_point)} /etc/fstab 2>/dev/null", timeout=5)
     fstab_entry = fstab_check["stdout"].strip() if fstab_check["returncode"] == 0 else ""
 
     msg = f"強制アンマウントしました: {target}" if force else f"アンマウントしました: {target}"
@@ -1391,7 +1454,7 @@ async def disks_unmount(req: Request):
 @app.post("/api/disks/partition/create")
 async def disks_partition_create(req: Request):
     """Create a new partition on a disk with optional filesystem and mount."""
-    data = await req.json()
+    data = await _get_json(req)
     disk_name = data.get("disk", "").strip()
     size_sectors = data.get("size_sectors", 0)
     fstype = data.get("fstype", "ext4").strip()
@@ -1404,10 +1467,21 @@ async def disks_partition_create(req: Request):
     if not disk_name or size_sectors <= 0:
         raise HTTPException(status_code=400, detail="disk and size_sectors are required")
 
+    disk_name = _validate_device_name(disk_name)
+    _validate_fstype(fstype if fstype not in ("fat32", "fat16") else "vfat")
+    if mount_point:
+        mount_point = _validate_mount_point(mount_point)
+    try:
+        size_sectors = int(size_sectors)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid size_sectors")
+    if size_sectors <= 0 or size_sectors > 2**40:
+        raise HTTPException(status_code=400, detail="invalid size_sectors")
+
     disk_path = f"/dev/{disk_name}"
 
     # Verify it's a disk device
-    type_check = await run_cmd(f"lsblk -dno TYPE {disk_path} 2>/dev/null", timeout=5)
+    type_check = await run_cmd(f"lsblk -dno TYPE {shlex.quote(disk_path)} 2>/dev/null", timeout=5)
     if type_check["stdout"].strip() != "disk":
         return {"success": False, "message": f"{disk_path} はディスクデバイスではありません"}
 
@@ -1423,19 +1497,19 @@ async def disks_partition_create(req: Request):
 
     # Detect existing partition table; a blank disk needs an explicit GPT label
     # (sfdisk would otherwise default to DOS, which rejects GPT type UUIDs)
-    table_check = await run_cmd(f"sfdisk -d {disk_path} 2>/dev/null", timeout=10)
+    table_check = await run_cmd(f"sfdisk -d {shlex.quote(disk_path)} 2>/dev/null", timeout=10)
     has_table = table_check["returncode"] == 0 and any(
         line.strip().startswith("/dev/") for line in table_check["stdout"].splitlines()
     )
 
     if has_table:
         res = await run_cmd(
-            _sudo(f"echo '{sfdisk_input}' | sfdisk --append --no-reread {disk_path}"),
+            _sudo(f"echo {shlex.quote(sfdisk_input)} | sfdisk --append --no-reread {shlex.quote(disk_path)}"),
             timeout=15,
         )
     else:
         # Cap the size so the partition fits before the last usable GPT sector
-        size_res = await run_cmd(f"lsblk -bno SIZE {disk_path} 2>/dev/null", timeout=5)
+        size_res = await run_cmd(f"lsblk -bno SIZE {shlex.quote(disk_path)} 2>/dev/null", timeout=5)
         try:
             total_sectors = int(size_res["stdout"].strip()) // 512
         except ValueError:
@@ -1447,18 +1521,18 @@ async def disks_partition_create(req: Request):
             size_sectors = max_sectors
         sfdisk_script = f"label: gpt\\ntype={type_uuid}, size={size_sectors}{name_field}\\n"
         res = await run_cmd(
-            _sudo(f"printf '{sfdisk_script}' | sfdisk --no-reread {disk_path}"),
+            _sudo(f"printf {shlex.quote(sfdisk_script)} | sfdisk --no-reread {shlex.quote(disk_path)}"),
             timeout=15,
         )
     if res["returncode"] != 0:
         return {"success": False, "message": f"パーティション作成に失敗しました: {res['stderr']}"}
 
     # Re-read partition table
-    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await run_cmd(_sudo(f"partprobe {shlex.quote(disk_path)}"), timeout=10)
     await asyncio.sleep(1)
 
     # Find the newly created partition
-    lsblk_res = await run_cmd(f"lsblk -Jno NAME,SIZE,TYPE {disk_path} 2>/dev/null", timeout=10)
+    lsblk_res = await run_cmd(f"lsblk -Jno NAME,SIZE,TYPE {shlex.quote(disk_path)} 2>/dev/null", timeout=10)
     new_part_name = None
     try:
         blk = json.loads(lsblk_res["stdout"])
@@ -1477,9 +1551,9 @@ async def disks_partition_create(req: Request):
 
     # Format filesystem (skip for swap)
     label_flag = "-n" if fstype in ("vfat", "fat32", "fat16") else "-L"
-    label_opt = f" {label_flag} '{label}'" if label else ""
+    label_opt = f" {label_flag} {shlex.quote(label)}" if label else ""
     if fstype == "swap":
-        mkfs_res = await run_cmd(_sudo(f"mkswap{label_opt} {new_part_path}"), timeout=30)
+        mkfs_res = await run_cmd(_sudo(f"mkswap{label_opt} {shlex.quote(new_part_path)}"), timeout=30)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"swapの作成に失敗しました: {mkfs_res['stderr']}"}
         msg = f"パーティション {new_part_name} を作成し、swapとして初期化しました"
@@ -1487,25 +1561,25 @@ async def disks_partition_create(req: Request):
             msg += f" (ラベル: {label})"
         return {"success": True, "message": msg, "device": new_part_name}
     else:
-        mkfs_cmd = f"mkfs.{fstype}{label_opt} {new_part_path}"
+        mkfs_cmd = f"mkfs.{fstype}{label_opt} {shlex.quote(new_part_path)}"
         mkfs_res = await run_cmd(_sudo(mkfs_cmd), timeout=60)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"ファイルシステム作成に失敗しました: {mkfs_res['stderr']}"}
 
     # Mount if requested
     if mount_point:
-        await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
-        mount_res = await run_cmd(_sudo(f"mount {new_part_path} {mount_point}"), timeout=15)
+        await run_cmd(_sudo(f"mkdir -p {shlex.quote(mount_point)}"), timeout=5)
+        mount_res = await run_cmd(_sudo(f"mount {shlex.quote(new_part_path)} {shlex.quote(mount_point)}"), timeout=15)
         if mount_res["returncode"] != 0:
             return {"success": True, "message": f"パーティション {new_part_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": new_part_name}
 
         if persistent:
-            blkid = await run_cmd(f"blkid -s UUID -o value {new_part_path}", timeout=5)
+            blkid = await run_cmd(f"blkid -s UUID -o value {shlex.quote(new_part_path)}", timeout=5)
             uuid = blkid["stdout"].strip()
             if uuid:
                 fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
                 add_fstab = await run_cmd(
-                    _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+                    _sudo(f"echo {shlex.quote(fstab_line)} >> /etc/fstab"),
                     timeout=10,
                 )
                 if add_fstab["returncode"] != 0:
@@ -1524,24 +1598,28 @@ async def disks_partition_create(req: Request):
 @app.post("/api/disks/partition/extend")
 async def disks_partition_extend(req: Request):
     """Extend a partition to use available free space."""
-    data = await req.json()
+    data = await _get_json(req)
     device_name = data.get("device", "").strip()
 
     if not device_name:
         raise HTTPException(status_code=400, detail="device is required")
 
+    device_name = _validate_device_name(device_name)
+    if not re.fullmatch(r"[A-Za-z0-9._-]*\d+", device_name):
+        raise HTTPException(status_code=400, detail="invalid partition device")
+
     device_path = f"/dev/{device_name}"
 
     # Verify it's a partition
-    type_check = await run_cmd(f"lsblk -dno TYPE {device_path} 2>/dev/null", timeout=5)
+    type_check = await run_cmd(f"lsblk -dno TYPE {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     dev_type = type_check["stdout"].strip()
     if dev_type not in ("part", "lvm"):
         return {"success": False, "message": f"{device_path} はパーティションではありません"}
 
     # Find parent disk and get free info
-    parent_res = await run_cmd(f"lsblk -dno PKNAME {device_path} 2>/dev/null", timeout=5)
+    parent_res = await run_cmd(f"lsblk -dno PKNAME {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     parent_disk = parent_res["stdout"].strip()
-    if not parent_disk:
+    if not parent_disk or not re.fullmatch(r"[A-Za-z0-9._-]+", parent_disk):
         return {"success": False, "message": "親ディスクが見つかりません"}
 
     free_info = await get_sfdisk_free_info(parent_disk)
@@ -1573,53 +1651,58 @@ async def disks_partition_extend(req: Request):
     disk_path = f"/dev/{parent_disk}"
 
     # Check if the partition is mounted
-    mp_res = await run_cmd(f"findmnt -n -o TARGET {device_path} 2>/dev/null", timeout=5)
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     mountpoint = mp_res["stdout"].strip()
 
     # Detect filesystem type
-    fs_res = await run_cmd(f"blkid -s TYPE -o value {device_path} 2>/dev/null", timeout=5)
+    fs_res = await run_cmd(f"blkid -s TYPE -o value {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     fs_type = fs_res["stdout"].strip()
 
     # Unmount if mounted (resize2fs/xfs_growfs can work online but partition resize needs unmount for safety)
     needs_remount = False
     if mountpoint:
-        unmount_res = await run_cmd(_sudo(f"umount {device_path}"), timeout=15)
+        unmount_res = await run_cmd(_sudo(f"umount {shlex.quote(device_path)}"), timeout=15)
         if unmount_res["returncode"] != 0:
             return {"success": False, "message": f"アンマウントに失敗しました: {unmount_res['stderr']}"}
         needs_remount = True
 
     # Resize partition using sfdisk
-    sfdisk_input = f"{part_num}: size={new_size_sectors}"
+    try:
+        part_num_int = int(part_num)
+        new_size_int = int(new_size_sectors)
+    except (TypeError, ValueError):
+        return {"success": False, "message": "パーティションサイズの計算に失敗しました"}
+    sfdisk_input = f"{part_num_int}: size={new_size_int}"
     resize_res = await run_cmd(
-        _sudo(f"echo '{sfdisk_input}' | sfdisk --no-reread -N {part_num} {disk_path}"),
+        _sudo(f"echo {shlex.quote(sfdisk_input)} | sfdisk --no-reread -N {part_num_int} {shlex.quote(disk_path)}"),
         timeout=15,
     )
     if resize_res["returncode"] != 0:
         # Try to remount if we unmounted
         if needs_remount and mountpoint:
-            await run_cmd(_sudo(f"mount {device_path} {mount_point}"), timeout=15)
+            await run_cmd(_sudo(f"mount {shlex.quote(device_path)} {shlex.quote(mountpoint)}"), timeout=15)
         return {"success": False, "message": f"パーティション拡張に失敗しました: {resize_res['stderr']}"}
 
     # Re-read partition table
-    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await run_cmd(_sudo(f"partprobe {shlex.quote(disk_path)}"), timeout=10)
     await asyncio.sleep(1)
 
     # Resize filesystem
     if fs_type == "ext4" or fs_type == "ext3" or fs_type == "ext2":
-        fs_res = await run_cmd(_sudo(f"resize2fs {device_path}"), timeout=30)
+        fs_res = await run_cmd(_sudo(f"resize2fs {shlex.quote(device_path)}"), timeout=30)
         if fs_res["returncode"] != 0:
             return {"success": False, "message": f"ファイルシステム拡張に失敗しました: {fs_res['stderr']}"}
     elif fs_type == "xfs":
         # XFS needs a mount point for growfs
         if mountpoint:
-            fs_res = await run_cmd(_sudo(f"xfs_growfs {mountpoint}"), timeout=30)
+            fs_res = await run_cmd(_sudo(f"xfs_growfs {shlex.quote(mountpoint)}"), timeout=30)
         else:
             fs_res = {"returncode": 1, "stderr": "XFSはマウントされていない状態では拡張できません"}
         if fs_res["returncode"] != 0:
             return {"success": False, "message": f"ファイルシステム拡張に失敗しました: {fs_res.get('stderr', 'unknown error')}"}
     elif fs_type == "btrfs":
         if mountpoint:
-            fs_res = await run_cmd(_sudo(f"btrfs filesystem resize max {mountpoint}"), timeout=30)
+            fs_res = await run_cmd(_sudo(f"btrfs filesystem resize max {shlex.quote(mountpoint)}"), timeout=30)
         else:
             fs_res = {"returncode": 1, "stderr": "Btrfsはマウントされていない状態では拡張できません"}
         if fs_res["returncode"] != 0:
@@ -1627,7 +1710,7 @@ async def disks_partition_extend(req: Request):
 
     # Remount if needed
     if needs_remount and mountpoint:
-        await run_cmd(_sudo(f"mount {device_path} {mountpoint}"), timeout=15)
+        await run_cmd(_sudo(f"mount {shlex.quote(device_path)} {shlex.quote(mountpoint)}"), timeout=15)
 
     msg = f"パーティション {device_name} を拡張しました (+{_format_bytes(max_bytes)})"
     if needs_remount and mountpoint:
@@ -1646,7 +1729,7 @@ def _format_bytes(b):
 @app.post("/api/disks/lv/create")
 async def disks_lv_create(req: Request):
     """Create a new logical volume in a VG, format and optionally mount."""
-    data = await req.json()
+    data = await _get_json(req)
     vg_name = data.get("vg_name", "").strip()
     lv_name = data.get("lv_name", "").strip()
     size = data.get("size", "").strip()
@@ -1657,39 +1740,46 @@ async def disks_lv_create(req: Request):
     if not vg_name or not lv_name or not size:
         raise HTTPException(status_code=400, detail="vg_name, lv_name, and size are required")
 
+    vg_name = _validate_lvm_name(vg_name, "vg_name")
+    lv_name = _validate_lvm_name(lv_name, "lv_name")
+    size = _validate_lv_size(size)
+    _validate_fstype(fstype)
+    if mount_point:
+        mount_point = _validate_mount_point(mount_point)
+
     # Create LV
     lv_path = f"/dev/{vg_name}/{lv_name}"
-    res = await run_cmd(_sudo(f"lvcreate -L {size} -n {lv_name} --yes {vg_name}"), timeout=30)
+    res = await run_cmd(_sudo(f"lvcreate -L {shlex.quote(size)} -n {shlex.quote(lv_name)} --yes {shlex.quote(vg_name)}"), timeout=30)
     if res["returncode"] != 0:
         return {"success": False, "message": f"論理ボリューム作成に失敗しました: {res['stderr']}"}
 
     # Format
     if fstype == "swap":
-        mkfs_res = await run_cmd(_sudo(f"mkswap {lv_path}"), timeout=30)
+        mkfs_res = await run_cmd(_sudo(f"mkswap {shlex.quote(lv_path)}"), timeout=30)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"swapの初期化に失敗しました: {mkfs_res['stderr']}"}
-        swapon_res = await run_cmd(_sudo(f"swapon {lv_path}"), timeout=10)
+        swapon_res = await run_cmd(_sudo(f"swapon {shlex.quote(lv_path)}"), timeout=10)
         msg = f"LV {lv_name} を作成し、swapとして有効にしました"
         return {"success": True, "message": msg, "device": lv_name}
     else:
-        mkfs_res = await run_cmd(_sudo(f"mkfs.{fstype} {lv_path}"), timeout=60)
+        mkfs_res = await run_cmd(_sudo(f"mkfs.{fstype} {shlex.quote(lv_path)}"), timeout=60)
         if mkfs_res["returncode"] != 0:
             return {"success": False, "message": f"ファイルシステム作成に失敗しました: {mkfs_res['stderr']}"}
 
     # Mount if requested
     if mount_point:
-        await run_cmd(_sudo(f"mkdir -p {mount_point}"), timeout=5)
-        mount_res = await run_cmd(_sudo(f"mount {lv_path} {mount_point}"), timeout=15)
+        await run_cmd(_sudo(f"mkdir -p {shlex.quote(mount_point)}"), timeout=5)
+        mount_res = await run_cmd(_sudo(f"mount {shlex.quote(lv_path)} {shlex.quote(mount_point)}"), timeout=15)
         if mount_res["returncode"] != 0:
             return {"success": True, "message": f"LV {lv_name} を作成しましたが、マウントに失敗しました: {mount_res['stderr']}", "device": lv_name}
 
         if persistent:
-            blkid = await run_cmd(f"blkid -s UUID -o value {lv_path}", timeout=5)
+            blkid = await run_cmd(f"blkid -s UUID -o value {shlex.quote(lv_path)}", timeout=5)
             uuid = blkid["stdout"].strip()
             if uuid:
                 fstab_line = f"UUID={uuid}\t{mount_point}\t{fstype}\tdefaults,nofail\t0\t2"
                 add_fstab = await run_cmd(
-                    _sudo(f"echo '{fstab_line}' >> /etc/fstab"),
+                    _sudo(f"echo {shlex.quote(fstab_line)} >> /etc/fstab"),
                     timeout=10,
                 )
                 if add_fstab["returncode"] != 0:
@@ -1706,7 +1796,7 @@ async def disks_lv_create(req: Request):
 @app.post("/api/disks/lv/resize")
 async def disks_lv_resize(req: Request):
     """Resize a logical volume and its filesystem."""
-    data = await req.json()
+    data = await _get_json(req)
     vg_name = data.get("vg_name", "").strip()
     lv_name = data.get("lv_name", "").strip()
     size = data.get("size", "").strip()  # e.g., "30G" or "+10G"
@@ -1714,23 +1804,27 @@ async def disks_lv_resize(req: Request):
     if not vg_name or not lv_name or not size:
         raise HTTPException(status_code=400, detail="vg_name, lv_name, and size are required")
 
+    vg_name = _validate_lvm_name(vg_name, "vg_name")
+    lv_name = _validate_lvm_name(lv_name, "lv_name")
+    size = _validate_lv_size(size)
+
     lv_path = f"/dev/{vg_name}/{lv_name}"
 
     # Check if LV exists
-    check = await run_cmd(f"test -b {lv_path}", timeout=5)
+    check = await run_cmd(f"test -b {shlex.quote(lv_path)}", timeout=5)
     if check["returncode"] != 0:
         return {"success": False, "message": f"論理ボリューム {lv_path} が見つかりません"}
 
     # Detect filesystem type
-    fs_res = await run_cmd(f"blkid -s TYPE -o value {lv_path} 2>/dev/null", timeout=5)
+    fs_res = await run_cmd(f"blkid -s TYPE -o value {shlex.quote(lv_path)} 2>/dev/null", timeout=5)
     fs_type = fs_res["stdout"].strip()
 
     # Get mount point
-    mp_res = await run_cmd(f"findmnt -n -o TARGET {lv_path} 2>/dev/null", timeout=5)
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {shlex.quote(lv_path)} 2>/dev/null", timeout=5)
     mountpoint = mp_res["stdout"].strip()
 
     # Resize LV
-    resize_cmd = f"lvresize -r -L {size} {lv_path}"
+    resize_cmd = f"lvresize -r -L {shlex.quote(size)} {shlex.quote(lv_path)}"
     res = await run_cmd(_sudo(resize_cmd), timeout=30)
     if res["returncode"] != 0:
         return {"success": False, "message": f"LVリサイズに失敗しました: {res['stderr']}"}
@@ -1744,34 +1838,35 @@ async def disks_lv_resize(req: Request):
 @app.post("/api/disks/partition/delete")
 async def disks_partition_delete(req: Request):
     """Delete a partition from a disk."""
-    data = await req.json()
+    data = await _get_json(req)
     device_name = data.get("device", "").strip()
 
     if not device_name:
         raise HTTPException(status_code=400, detail="device is required")
 
+    device_name = _validate_device_name(device_name)
     device_path = f"/dev/{device_name}"
 
     # Verify it's a partition
-    type_check = await run_cmd(f"lsblk -dno TYPE {device_path} 2>/dev/null", timeout=5)
+    type_check = await run_cmd(f"lsblk -dno TYPE {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     dev_type = type_check["stdout"].strip()
     if dev_type not in ("part", "lvm"):
         return {"success": False, "message": f"{device_path} はパーティションではありません"}
 
     # Check if mounted
-    mp_res = await run_cmd(f"findmnt -n -o TARGET {device_path} 2>/dev/null", timeout=5)
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     mountpoint = mp_res["stdout"].strip()
     if mountpoint:
         return {"success": False, "message": f"マウント中のパーティションは削除できません（{mountpoint}）。\n先にアンマウントしてください。"}
 
     # Get parent disk
-    parent_res = await run_cmd(f"lsblk -dno PKNAME {device_path} 2>/dev/null", timeout=5)
+    parent_res = await run_cmd(f"lsblk -dno PKNAME {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     parent_disk = parent_res["stdout"].strip()
-    if not parent_disk:
+    if not parent_disk or not re.fullmatch(r"[A-Za-z0-9._-]+", parent_disk):
         return {"success": False, "message": "親ディスクが見つかりません"}
 
     # Check if it's an LVM PV - refuse deletion if so
-    pv_check = await run_cmd(f"pvs --noheadings -o vg_name {device_path} 2>/dev/null", timeout=5)
+    pv_check = await run_cmd(f"pvs --noheadings -o vg_name {shlex.quote(device_path)} 2>/dev/null", timeout=5)
     if pv_check["returncode"] == 0 and pv_check["stdout"].strip():
         return {"success": False, "message": f"このパーティションはLVM物理ボリュームとして使用中です（VG: {pv_check['stdout'].strip()}）。LVを先に削除してください。"}
 
@@ -1782,18 +1877,18 @@ async def disks_partition_delete(req: Request):
             part_num = ch + part_num
         else:
             break
-    if not part_num:
+    if not part_num or not part_num.isdigit():
         return {"success": False, "message": "パーティション番号を取得できませんでした"}
 
     disk_path = f"/dev/{parent_disk}"
 
     # Delete partition using sfdisk
-    res = await run_cmd(_sudo(f"sfdisk --delete {disk_path} {part_num}"), timeout=15)
+    res = await run_cmd(_sudo(f"sfdisk --delete {shlex.quote(disk_path)} {int(part_num)}"), timeout=15)
     if res["returncode"] != 0:
         return {"success": False, "message": f"パーティション削除に失敗しました: {res['stderr']}"}
 
     # Re-read partition table
-    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await run_cmd(_sudo(f"partprobe {shlex.quote(disk_path)}"), timeout=10)
 
     return {"success": True, "message": f"パーティション {device_name} を削除しました"}
 
@@ -1801,35 +1896,35 @@ async def disks_partition_delete(req: Request):
 @app.post("/api/disks/disk/wipe")
 async def disks_disk_wipe(req: Request):
     """Delete all partitions from a disk."""
-    data = await req.json()
+    data = await _get_json(req)
     disk_name = data.get("device", "").strip()
 
     if not disk_name:
         raise HTTPException(status_code=400, detail="device is required")
 
-    disk_path = f"/dev/{disk_name}"
+    disk_path = f"/dev/{_validate_device_name(disk_name)}"
 
     # Verify it's a disk
-    type_check = await run_cmd(f"lsblk -dno TYPE {disk_path} 2>/dev/null", timeout=5)
+    type_check = await run_cmd(f"lsblk -dno TYPE {shlex.quote(disk_path)} 2>/dev/null", timeout=5)
     if type_check["stdout"].strip() != "disk":
         return {"success": False, "message": f"{disk_path} はディスクデバイスではありません"}
 
     # Check if any partition is mounted
-    mp_check = await run_cmd(f"findmnt -n -o TARGET,SOURCE 2>/dev/null | grep '{disk_path}'", timeout=5)
+    mp_check = await run_cmd(f"findmnt -n -o TARGET,SOURCE 2>/dev/null | grep -F {shlex.quote(disk_path)}", timeout=5)
     if mp_check["stdout"].strip():
         return {"success": False, "message": "マウント中のパーティションが含まれています。先にすべてアンマウントしてください。"}
 
     # Check if any partition is an LVM PV
-    pv_check = await run_cmd(f"pvs --noheadings -o pv_name,vg_name 2>/dev/null | grep '{disk_path}'", timeout=5)
+    pv_check = await run_cmd(f"pvs --noheadings -o pv_name,vg_name 2>/dev/null | grep -F {shlex.quote(disk_path)}", timeout=5)
     if pv_check["stdout"].strip():
         return {"success": False, "message": f"LVM物理ボリュームが含まれています。先にVGを削除してください。\n{pv_check['stdout'].strip()}"}
 
     # Delete all partitions
-    res = await run_cmd(_sudo(f"sfdisk --delete {disk_path}"), timeout=15)
+    res = await run_cmd(_sudo(f"sfdisk --delete {shlex.quote(disk_path)}"), timeout=15)
     if res["returncode"] != 0:
         return {"success": False, "message": f"パーティション削除に失敗しました: {res['stderr']}"}
 
-    await run_cmd(_sudo(f"partprobe {disk_path}"), timeout=10)
+    await run_cmd(_sudo(f"partprobe {shlex.quote(disk_path)}"), timeout=10)
 
     return {"success": True, "message": f"ディスク {disk_name} の全パーティションを削除しました"}
 
@@ -1837,33 +1932,35 @@ async def disks_disk_wipe(req: Request):
 @app.post("/api/disks/lv/delete")
 async def disks_lv_delete(req: Request):
     """Delete a logical volume."""
-    data = await req.json()
+    data = await _get_json(req)
     vg_name = data.get("vg_name", "").strip()
     lv_name = data.get("lv_name", "").strip()
 
     if not vg_name or not lv_name:
         raise HTTPException(status_code=400, detail="vg_name and lv_name are required")
 
+    vg_name = _validate_lvm_name(vg_name, "vg_name")
+    lv_name = _validate_lvm_name(lv_name, "lv_name")
     lv_path = f"/dev/{vg_name}/{lv_name}"
 
     # Check if LV exists
-    check = await run_cmd(f"test -b {lv_path}", timeout=5)
+    check = await run_cmd(f"test -b {shlex.quote(lv_path)}", timeout=5)
     if check["returncode"] != 0:
         return {"success": False, "message": f"論理ボリューム {lv_path} が見つかりません"}
 
     # Check if mounted
-    mp_res = await run_cmd(f"findmnt -n -o TARGET {lv_path} 2>/dev/null", timeout=5)
+    mp_res = await run_cmd(f"findmnt -n -o TARGET {shlex.quote(lv_path)} 2>/dev/null", timeout=5)
     mountpoint = mp_res["stdout"].strip()
     if mountpoint:
         return {"success": False, "message": f"マウント中の論理ボリュームは削除できません（{mountpoint}）。\n先にアンマウントしてください。"}
 
     # Check if it's swap
-    swap_res = await run_cmd(f"swapon --show=NAME --noheadings 2>/dev/null | grep -q '{lv_path}'", timeout=5)
+    swap_res = await run_cmd(f"swapon --show=NAME --noheadings 2>/dev/null | grep -q -F {shlex.quote(lv_path)}", timeout=5)
     if swap_res["returncode"] == 0:
-        await run_cmd(_sudo(f"swapoff {lv_path}"), timeout=15)
+        await run_cmd(_sudo(f"swapoff {shlex.quote(lv_path)}"), timeout=15)
 
     # Delete LV
-    res = await run_cmd(_sudo(f"lvremove -f {lv_path}"), timeout=15)
+    res = await run_cmd(_sudo(f"lvremove -f {shlex.quote(lv_path)}"), timeout=15)
     if res["returncode"] != 0:
         return {"success": False, "message": f"論理ボリューム削除に失敗しました: {res['stderr']}"}
 
@@ -2242,7 +2339,7 @@ async def clonezilla_files(version: str):
 async def clonezilla_download(req: Request):
     """Start downloading a Clonezilla ISO from SourceForge into /iso."""
     global _iso_dl_proc
-    data = await req.json()
+    data = await _get_json(req)
     url = (data.get("url") or "").strip()
     filename = (data.get("filename") or "").strip()
     if not url or not filename:
@@ -2320,7 +2417,7 @@ async def backup_partitions():
 @app.post("/api/backup/images")
 async def backup_images(req: Request):
     """List Clonezilla backup images stored on the given partition."""
-    data = await req.json()
+    data = await _get_json(req)
     device = _validate_block_device(data.get("device", "").strip())
     images = await _list_clonezilla_images(device)
     return {"images": images, "prefix": _clonezilla_image_prefix()}
@@ -2335,7 +2432,7 @@ async def backup_run(req: Request):
     update-grub and arms grub-reboot so the next boot performs the backup or
     restore automatically. The caller reboots afterwards.
     """
-    data = await req.json()
+    data = await _get_json(req)
     mode = data.get("mode", "").strip()
     device = _validate_block_device(data.get("device", "").strip())
     image = (data.get("image") or "").strip()
@@ -2643,7 +2740,7 @@ async def timeshift_snapshots():
 @app.post("/api/timeshift/excludes")
 async def timeshift_save_excludes(req: Request):
     """Save the exclude list to /etc/timeshift/timeshift.json."""
-    data = await req.json()
+    data = await _get_json(req)
     excludes_raw = data.get("excludes")
 
     excludes: list[str] = []
@@ -2689,7 +2786,7 @@ async def timeshift_create(req: Request):
     The exclude paths are written into /etc/timeshift/timeshift.json first
     because the Timeshift CLI does not accept ``--exclude`` flags.
     """
-    data = await req.json()
+    data = await _get_json(req)
     comment = (data.get("comment") or "").strip()
     excludes_raw = data.get("excludes")
 
@@ -2739,7 +2836,7 @@ async def timeshift_create(req: Request):
     # Write the helper script directly (no shell, no subprocess).
     ts_script = f"/tmp/ts_update_{os.getpid()}.py"
     try:
-        with open(ts_script, "w") as f:
+        with open(ts_script, "w", encoding="utf-8") as f:
             f.write(script_body)
     except OSError as e:
         return {"success": False, "message": f"ヘルパースクリプトの書き出しに失敗しました: {e}"}
@@ -2756,7 +2853,7 @@ async def timeshift_create(req: Request):
 @app.post("/api/timeshift/restore")
 async def timeshift_restore(req: Request):
     """Build the command to restore a Timeshift snapshot (sent to terminal)."""
-    data = await req.json()
+    data = await _get_json(req)
     snapshot_id = data.get("snapshot_id")
     if snapshot_id is None:
         raise HTTPException(status_code=400, detail="snapshot_id is required")
@@ -2788,7 +2885,7 @@ async def timeshift_restore(req: Request):
 @app.post("/api/timeshift/delete")
 async def timeshift_delete(req: Request):
     """Delete a Timeshift snapshot."""
-    data = await req.json()
+    data = await _get_json(req)
     snapshot_id = data.get("snapshot_id")
     if snapshot_id is None:
         raise HTTPException(status_code=400, detail="snapshot_id is required")
@@ -2844,7 +2941,7 @@ async def system_selfupdate():
     Applying the new version (service restart) is done manually by the user.
     """
     try:
-        with open(SERVUI_UPDATE_PID) as f:
+        with open(SERVUI_UPDATE_PID, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         return {"success": False, "message": "アップデートが既に実行中です"}
@@ -2883,7 +2980,7 @@ async def system_selfupdate_status():
     """Return current self-update progress (running flag + log tail)."""
     running = False
     try:
-        with open(SERVUI_UPDATE_PID) as f:
+        with open(SERVUI_UPDATE_PID, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         running = True
@@ -2893,7 +2990,7 @@ async def system_selfupdate_status():
     log_tail = ""
     done = False
     try:
-        with open(SERVUI_UPDATE_LOG, errors="replace") as f:
+        with open(SERVUI_UPDATE_LOG, encoding="utf-8", errors="replace") as f:
             content = f.read()
         done = "__SERVUI_UPDATE_DONE__" in content
         log_tail = content[-3000:]
@@ -3206,7 +3303,7 @@ async def _detect_boot_paths(iso_path: str) -> tuple[str, str, str]:
 @app.post("/api/grub/isos")
 async def grub_scan_isos(req: Request):
     """Mount a partition temporarily, list ISO files with auto-detected boot paths."""
-    data = await req.json()
+    data = await _get_json(req)
     name = (data.get("device") or "").strip()
 
     resolved = await _resolve_part_device(name)
@@ -3367,7 +3464,7 @@ async def _write_root_file(path: str, content: str) -> tuple[bool, str]:
 @app.post("/api/grub/entries/add")
 async def grub_entries_add(req: Request):
     """Append ISO loop boot entries to 40_custom, backup first, then update-grub."""
-    data = await req.json()
+    data = await _get_json(req)
     name = (data.get("device") or "").strip()
     isos = data.get("isos") or []
     if not isinstance(isos, list) or not isos:
@@ -3460,7 +3557,7 @@ def _remove_menuentry_block(content: str, name: str, occurrence: int) -> str:
 @app.post("/api/grub/entries/delete")
 async def grub_entries_delete(req: Request):
     """Delete custom (40_custom-derived) entries by index, backup first, then update-grub."""
-    data = await req.json()
+    data = await _get_json(req)
     indices = data.get("indices")
     if not isinstance(indices, list) or not indices:
         raise HTTPException(status_code=400, detail="indices are required")
@@ -3756,7 +3853,7 @@ async def ubuntu_files(version: str):
 async def grub_iso_download(req: Request):
     """Start downloading an ISO image from a direct URL into /iso using wget (background)."""
     global _iso_dl_proc
-    data = await req.json()
+    data = await _get_json(req)
     url = (data.get("url") or "").strip()
     if not url:
         return {"success": False, "message": "ISOイメージのURLを入力してください"}
@@ -4040,7 +4137,7 @@ async def fleet_pins_list():
 @app.post("/api/fleet/pin")
 async def fleet_pins_add(req: Request):
     """Pin a detected serv-UI host (persisted in fleet_pins.json)."""
-    data = await req.json()
+    data = await _get_json(req)
     fqdn = (data.get("fqdn") or "").strip().rstrip(".").lower()
     ips = [str(i) for i in (data.get("ips") or [])]
     key = _fleet_pin_key(fqdn, ips)
@@ -4060,7 +4157,7 @@ async def fleet_pins_add(req: Request):
 @app.post("/api/fleet/unpin")
 async def fleet_pins_remove(req: Request):
     """Unpin a serv-UI host."""
-    data = await req.json()
+    data = await _get_json(req)
     key = (data.get("key") or "").strip().rstrip(".").lower()
     if not key:
         raise HTTPException(status_code=400, detail="key is required")

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # --- yes/noプロンプト関数 ---
 ask_yn() {
@@ -31,7 +31,7 @@ EOF
 
 sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y
 sudo apt install -y curl
-curl -fsSL https://tailscale.com/install.sh | sh
+curl -fsSL https://tailscale.com/install.sh | sudo sh
 
 echo ""
 if ask_yn "Tailscale の authkey がありますか？"; then
@@ -51,6 +51,10 @@ else
 fi
 
 sudo apt install -y git
-sudo git clone https://github.com/hirogura/servui.git
+if [[ ! -d servui ]]; then
+  sudo git clone https://github.com/hirogura/servui.git
+else
+  echo "[info] ./servui already exists, skipping clone"
+fi
 cd servui
 sudo bash setup.sh

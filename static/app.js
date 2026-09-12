@@ -10,13 +10,19 @@ let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
+const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager']);
 document.querySelectorAll('.nav-links li').forEach(li => {
   li.addEventListener('click', () => {
+    // 外部ツールは別タブ/別画面で開くのみで、コンテンツ切替は行わない
+    if (EXTERNAL_TABS.has(li.dataset.tab)) return;
     switchTab(li.dataset.tab);
   });
 });
 
 function switchTab(tab) {
+  if (EXTERNAL_TABS.has(tab)) return;
+  const target = document.getElementById(`tab-${tab}`);
+  if (!target) return;
   currentTab = tab;
   document.querySelectorAll('.nav-links li').forEach(l => l.classList.toggle('active', l.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
@@ -159,7 +165,9 @@ async function shutdownSystem() {
 async function loadDashboard() {
   try {
     const resp = await fetch('/api/system/info');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
+    if (!data || !data.cpu || !data.memory || !data.disk) throw new Error('invalid system info');
 
     // サイドバーのホスト名表示
     const hostEl = document.getElementById('sidebar-hostname');
@@ -345,14 +353,14 @@ function renderServices(services) {
     return `
       <tr>
         <td>${escapeHtml(s.name.replace('.service', ''))}</td>
-        <td><span class="badge ${badgeClass}">${s.active}</span></td>
-        <td>${s.sub}</td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(s.active)}</span></td>
+        <td>${escapeHtml(s.sub)}</td>
         <td>
           <div class="btn-group">
-            <button class="btn btn-sm btn-success" onclick="serviceAction('${s.name}','start')" title="開始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
-            <button class="btn btn-sm btn-danger" onclick="serviceAction('${s.name}','stop')" title="停止"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
-            <button class="btn btn-sm btn-primary" onclick="serviceAction('${s.name}','restart')" title="再起動"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></button>
-            <button class="btn btn-sm btn-secondary" onclick="serviceDetail('${s.name}')" title="詳細"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
+            <button class="btn btn-sm btn-success" onclick="serviceAction('${escapeJs(s.name)}','start')" title="開始"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
+            <button class="btn btn-sm btn-danger" onclick="serviceAction('${escapeJs(s.name)}','stop')" title="停止"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+            <button class="btn btn-sm btn-primary" onclick="serviceAction('${escapeJs(s.name)}','restart')" title="再起動"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></button>
+            <button class="btn btn-sm btn-secondary" onclick="serviceDetail('${escapeJs(s.name)}')" title="詳細"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
           </div>
         </td>
       </tr>
@@ -361,9 +369,11 @@ function renderServices(services) {
 }
 
 function filterServices() {
-  const q = document.getElementById('service-search').value.toLowerCase();
+  const _sq = document.getElementById('service-search');
+  const q = (_sq && _sq.value ? _sq.value : '').toLowerCase();
+  if (!Array.isArray(window._allServices)) return;
   const filtered = window._allServices.filter(s =>
-    s.name.toLowerCase().includes(q)
+    String(s.name || '').toLowerCase().includes(q)
   );
   renderServices(filtered);
 }
@@ -427,7 +437,7 @@ async function checkUpdates() {
       container.innerHTML = data.packages.map(p => `
         <div class="package-item">
           <span>${escapeHtml(p.name)}</span>
-          <button class="btn btn-sm btn-primary" onclick="upgradePackage('${escapeHtml(p.name)}')">更新</button>
+          <button class="btn btn-sm btn-primary" onclick="upgradePackage('${escapeJs(p.name)}')">更新</button>
         </div>
       `).join('');
     }
@@ -653,9 +663,12 @@ function connectTerminal() {
     }
   });
 
-  window.addEventListener('resize', () => {
-    if (fitAddon) fitAddon.fit();
-  });
+  if (!window._servuiTermResizeBound) {
+    window._servuiTermResizeBound = true;
+    window.addEventListener('resize', () => {
+      if (fitAddon) { try { fitAddon.fit(); } catch (e) {} }
+    });
+  }
 }
 
 // --- Wi-Fi ---
@@ -747,8 +760,11 @@ async function scanWifi() {
             const isConnected = net.in_use;
             const isOpen = !net.security || net.security.toLowerCase() === 'open' || net.security.includes('--');
             const safeSSID = escapeHtml(net.ssid);
+            const jsSSID = escapeJs(net.ssid);
             const safeBSSID = escapeHtml(net.bssid || '');
             const safeSec = escapeHtml(net.security);
+            const jsSec = escapeJs(net.security);
+            const jsBSSID = escapeJs(net.bssid || '');
             const freqStr = net.freq ? `${net.freq} (${net.chan || '-'})` : (net.chan || '-');
 
             let sigClass = 'signal-good';
@@ -776,9 +792,9 @@ async function scanWifi() {
                 </td>
                 <td>
                   ${isConnected ? `
-                    <button class="btn btn-sm btn-danger" onclick="disconnectWifi('${safeSSID}')">切断</button>
+                    <button class="btn btn-sm btn-danger" onclick="disconnectWifi('${jsSSID}')">切断</button>
                   ` : `
-                    <button class="btn btn-sm btn-primary" onclick="openWifiConnect('${safeSSID}', '${safeSec}', '${safeBSSID}')">接続</button>
+                    <button class="btn btn-sm btn-primary" onclick="openWifiConnect('${jsSSID}', '${jsSec}', '${jsBSSID}')">接続</button>
                   `}
                 </td>
               </tr>
@@ -2015,8 +2031,8 @@ async function scanGrubIsos() {
             </span>
           </label>
           <div style="display:flex;gap:0.35rem;font-size:0.72rem;">
-            <input type="text" class="grub-iso-vmlinuz" data-idx="${i}" value="${escapeHtml(iso.vmlinuz)}" placeholder="/casper/vmlinuz" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
-            <input type="text" class="grub-iso-initrd" data-idx="${i}" value="${escapeHtml(iso.initrd)}" placeholder="/casper/initrd" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
+            <input type="text" class="grub-iso-vmlinuz" data-idx="${i}" value="${escapeAttr(iso.vmlinuz)}" placeholder="/casper/vmlinuz" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
+            <input type="text" class="grub-iso-initrd" data-idx="${i}" value="${escapeAttr(iso.initrd)}" placeholder="/casper/initrd" style="width:150px;padding:0.25rem 0.4rem;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);">
           </div>
         </div>`).join('');
     document.getElementById('btn-grub-add').style.display = 'inline-block';
@@ -2270,7 +2286,7 @@ async function loadUbuntuVersions() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     sel.innerHTML = data.versions.map(v =>
-      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.display)}</option>`
+      `<option value="${escapeAttr(v.name)}">${escapeHtml(v.display)}</option>`
     ).join('') || '<option value="">バージョンがありません</option>';
     sel.disabled = false;
     fileBtn.disabled = false;
@@ -2294,7 +2310,7 @@ async function loadUbuntuFiles() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     fileSel.innerHTML = data.files.map(f =>
-      `<option value="${escapeHtml(f.download_url)}" data-filename="${escapeJs(f.name)}">${escapeHtml(f.name)}</option>`
+      `<option value="${escapeAttr(f.download_url)}" data-filename="${escapeAttr(f.name)}">${escapeHtml(f.name)}</option>`
     ).join('') || '<option value="">ISOファイルがありません</option>';
     fileSel.disabled = false;
     dlBtn.disabled = false;
@@ -2364,8 +2380,13 @@ function escapeHtml(str) {
 }
 
 function escapeJs(str) {
-  if (!str) return '';
-  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/</g, '\\x3c').replace(/>/g, '\\x3e');
+}
+
+function escapeAttr(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function showStatus(msg, type) {
@@ -2546,7 +2567,7 @@ async function loadClonezillaVersions() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     sel.innerHTML = data.versions.map(v =>
-      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)}</option>`
+      `<option value="${escapeAttr(v.name)}">${escapeHtml(v.name)}</option>`
     ).join('') || '<option value="">バージョンがありません</option>';
     sel.disabled = false;
     fileBtn.disabled = false;
@@ -2569,7 +2590,7 @@ async function loadClonezillaFiles() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     fileSel.innerHTML = data.files.map(f =>
-      `<option value="${escapeHtml(f.download_url)}" data-filename="${escapeJs(f.name)}">${escapeHtml(f.name)}</option>`
+      `<option value="${escapeAttr(f.download_url)}" data-filename="${escapeAttr(f.name)}">${escapeHtml(f.name)}</option>`
     ).join('') || '<option value="">ISOファイルがありません</option>';
     fileSel.disabled = false;
     dlBtn.disabled = false;
@@ -2752,7 +2773,7 @@ async function loadBackupPartitions() {
     const options = data.partitions.map(p => {
       const label = [p.device, p.size, p.fstype || '(fs不明)', p.mountpoint ? `mount=${p.mountpoint}` : null]
         .filter(Boolean).join(' / ');
-      return `<option value="${escapeHtml(p.device)}">${escapeHtml(label)}</option>`;
+      return `<option value="${escapeAttr(p.device)}">${escapeHtml(label)}</option>`;
     }).join('');
     destSel.innerHTML = options || '<option value="">パーティションがありません</option>';
     srcSel.innerHTML = options || '<option value="">パーティションがありません</option>';
@@ -2853,7 +2874,7 @@ async function loadRestoreImages() {
       return;
     }
     imgSel.innerHTML = data.images.map(img =>
-      `<option value="${escapeHtml(img)}">${escapeHtml(img)}</option>`).join('');
+      `<option value="${escapeAttr(img)}">${escapeHtml(img)}</option>`).join('');
     showBackupStatus(`${data.images.length} 件のバックアップイメージが見つかりました`, 'success');
   } catch (e) {
     imgSel.innerHTML = '<option value="">イメージ一覧の取得に失敗しました</option>';
@@ -3030,7 +3051,7 @@ async function loadTimeshiftSnapshots() {
       html += `<td style="padding:0.5rem;">${escapeHtml(s.tags)}</td>`;
       html += `<td style="padding:0.5rem;">${escapeHtml(s.description)}</td>`;
       html += `<td style="padding:0.5rem;white-space:nowrap;font-size:0.85rem;">${escapeHtml(s.size || '-')}</td>`;
-      html += `<td style="padding:0.5rem;"><button class="btn btn-primary" onclick="restoreSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button> <button class="btn btn-danger" onclick="deleteSnapshot(${s.id},'${escapeHtml(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">削除</button></td>`;
+      html += `<td style="padding:0.5rem;"><button class="btn btn-primary" onclick="restoreSnapshot(${Number(s.id) || 0},'${escapeJs(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">復元</button> <button class="btn btn-danger" onclick="deleteSnapshot(${Number(s.id) || 0},'${escapeJs(s.name)}')" style="font-size:0.8rem;padding:0.25rem 0.6rem;">削除</button></td>`;
       html += '</tr>';
     }
     html += '</tbody></table>';
@@ -3332,13 +3353,13 @@ async function unpinFleetNode(key) {
 function refreshFleetView() {
   const dn = key => fleetNodes.find(n => n.key === key);
   fetch('/api/fleet/pins', { cache: 'no-store' })
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(data => {
       const pinnedKeys = new Set((data.pins || []).map(p => p.key));
       fleetNodes.forEach(n => { n.pinned = pinnedKeys.has(n.key); });
       renderFleetDetect();
     })
-    .catch(() => {});
+    .catch((e) => { console.error('Fleet pins refresh error:', e); });
   loadFleetPins();
 }
 

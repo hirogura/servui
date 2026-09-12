@@ -505,8 +505,13 @@ h2 {
 
 .package-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
   margin-bottom: 1rem;
+}
+
+.proc-table-wrap {
+  overflow-x: auto;
 }
 
 .status-msg {
