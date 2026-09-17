@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.0.0")
+app = FastAPI(title="serv-UI", version="2.0.1")
 
 
 @app.middleware("http")
@@ -2065,9 +2065,15 @@ async def ddrescuegui_status():
 @app.get("/api/diskmanager/status")
 async def diskmanager_status():
     """Check if Disk Manager is installed and return its URL."""
-    svc = await run_cmd("systemctl is-enabled diskmanager 2>/dev/null", timeout=5)
+    svc_enabled = await run_cmd("systemctl is-enabled diskmanager 2>/dev/null", timeout=5)
+    svc_active = await run_cmd("systemctl is-active diskmanager 2>/dev/null", timeout=5)
+    svc_file = await run_cmd("test -f /etc/systemd/system/diskmanager.service", timeout=5)
     dir_check = await run_cmd("test -d /opt/diskmanager", timeout=5)
-    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+    server_check = await run_cmd("test -f /opt/diskmanager/server.py", timeout=5)
+    installed = any(
+        r["returncode"] == 0
+        for r in (svc_enabled, svc_active, svc_file, dir_check, server_check)
+    )
 
     url = None
     if installed:
