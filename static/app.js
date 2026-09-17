@@ -10,7 +10,7 @@ let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
 
 // --- Tab Navigation ---
-const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager']);
+const EXTERNAL_TABS = new Set(['servex', 'selfcode', 'easylxd', 'vmmanager', 'diskmanager']);
 document.querySelectorAll('.nav-links li').forEach(li => {
   li.addEventListener('click', () => {
     // 外部ツールは別タブ/別画面で開くのみで、コンテンツ切替は行わない
@@ -2543,6 +2543,35 @@ async function openDdrescueGui() {
     }
   } catch (e) {
     showStatus(`ddrescueGUI確認エラー: ${e.message}`, 'error');
+  }
+}
+
+// --- Disk Manager ---
+async function openDiskManager() {
+  try {
+    const resp = await fetch('/api/diskmanager/status');
+    const data = await resp.json();
+
+    if (data.installed && data.url) {
+      window.open(data.url, '_blank');
+    } else if (data.installed) {
+      switchTab('terminal');
+      showStatus('Disk Managerはインストール済みです。URLを取得できませんでした。', 'info');
+    } else {
+      if (!confirm('Disk Managerはまだインストールされていません。\nインストールしますか？')) return;
+      switchTab('terminal');
+      showStatus('Disk Managerをインストール中... ターミナルで進捗を確認できます。', 'info');
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const installCmd = 'sudo wget -O /tmp/diskmanager-install.sh https://raw.githubusercontent.com/hirogura/diskmanager/main/install.sh && sudo bash /tmp/diskmanager-install.sh\n';
+          ws.send(JSON.stringify({ type: 'input', data: installCmd }));
+        } else {
+          showStatus('ターミナルに接続できません', 'error');
+        }
+      }, 500);
+    }
+  } catch (e) {
+    showStatus(`Disk Manager確認エラー: ${e.message}`, 'error');
   }
 }
 
