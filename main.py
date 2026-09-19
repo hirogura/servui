@@ -121,9 +121,18 @@ def _validate_lv_size(size: str) -> str:
 @app.get("/api/selfex/status")
 async def selfex_status():
     """Check if selfEx is installed and return its URL."""
-    svc = await run_cmd("systemctl is-enabled selfex 2>/dev/null", timeout=5)
-    dir_check = await run_cmd("test -d /opt/selfex", timeout=5)
-    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+    # NOTE: a bare /opt/selfex directory is NOT sufficient evidence
+    # (an empty leftover dir would cause a false positive and open a dead URL).
+    # Require the systemd unit or the real server files installed by install-selfex1.sh.
+    svc_enabled = await run_cmd("systemctl is-enabled selfex 2>/dev/null", timeout=5)
+    svc_active = await run_cmd("systemctl is-active selfex 2>/dev/null", timeout=5)
+    svc_file = await run_cmd("test -f /etc/systemd/system/selfex.service", timeout=5)
+    server_js = await run_cmd("test -f /opt/selfex/server/server.js", timeout=5)
+    installed = any(
+        r["returncode"] == 0
+        for r in (svc_enabled, svc_active, svc_file, server_js)
+    )
+    active = svc_active["returncode"] == 0
 
     url = None
     if installed:
@@ -137,8 +146,7 @@ async def selfex_status():
         except (json.JSONDecodeError, KeyError):
             pass
 
-    return {"installed": installed, "url": url}
-
+    return {"installed": installed, "active": active, "url": url}
 
 
 # --- Helper: run shell command ---

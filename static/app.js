@@ -2406,30 +2406,56 @@ function showStatus(msg, type) {
 
 // --- selfEx ---
 async function openSelfEx() {
+  let resp;
   try {
-    const resp = await fetch('/api/selfex/status');
-    const data = await resp.json();
-
-    if (data.installed && data.url) {
-      window.open(data.url, '_blank');
-    } else if (data.installed) {
-      switchTab('terminal');
-      showStatus('selfExはインストール済みです。URLを取得できませんでした。', 'info');
-    } else {
-      if (!confirm('selfExはまだインストールされていません。\nインストールしますか？')) return;
-      switchTab('terminal');
-      showStatus('selfExをインストール中... ターミナルで進捗を確認できます。', 'info');
-      setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          const installCmd = 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hirogura/selfex/main/install-selfex1.sh)"\n';
-          ws.send(JSON.stringify({ type: 'input', data: installCmd }));
-        } else {
-          showStatus('ターミナルに接続できません', 'error');
-        }
-      }, 500);
-    }
+    resp = await fetch('/api/selfex/status');
   } catch (e) {
     showStatus(`selfEx確認エラー: ${e.message}`, 'error');
+    return;
+  }
+
+  // 旧serv-UI（本API未搭載）で稼働中の場合は404になる。
+  // そのままでは data.installed が undefined で「未インストール」扱いになり
+  // 誤ってインストール誘導してしまうため、再起動案内に留めて抜ける。
+  if (!resp.ok) {
+    if (resp.status === 404) {
+      showStatus('selfEx連携にはserv-UIの再起動が必要です。サイドバーの「serv-UI再起動」を押してから再度お試しください。', 'error');
+    } else {
+      showStatus(`selfEx確認エラー: HTTP ${resp.status}`, 'error');
+    }
+    return;
+  }
+
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    showStatus(`selfEx確認エラー: ${e.message}`, 'error');
+    return;
+  }
+
+  // active が undefined の旧バックエンドでは従来通り開く（楽観的に扱う）
+  const isActive = data.active !== false;
+  if (data.installed && isActive && data.url) {
+    window.open(data.url, '_blank');
+  } else if (data.installed && data.url) {
+    switchTab('terminal');
+    showStatus('selfExはインストール済みですが、サービスが停止しています。`sudo systemctl start selfex` で起動できます。', 'info');
+  } else if (data.installed) {
+    switchTab('terminal');
+    showStatus('selfExはインストール済みです。URLを取得できませんでした。', 'info');
+  } else {
+    if (!confirm('selfExはまだインストールされていません。\nインストールしますか？')) return;
+    switchTab('terminal');
+    showStatus('selfExをインストール中... ターミナルで進捗を確認できます。', 'info');
+    setTimeout(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const installCmd = 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hirogura/selfex/main/install-selfex1.sh)"\n';
+        ws.send(JSON.stringify({ type: 'input', data: installCmd }));
+      } else {
+        showStatus('ターミナルに接続できません', 'error');
+      }
+    }, 500);
   }
 }
 
