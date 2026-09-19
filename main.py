@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.0.2")
+app = FastAPI(title="serv-UI", version="2.1.0")
 
 
 @app.middleware("http")
@@ -118,11 +118,11 @@ def _validate_lv_size(size: str) -> str:
     return size
 
 
-@app.get("/api/servex/status")
-async def servex_status():
-    """Check if servEX is installed and return its URL."""
-    svc = await run_cmd("systemctl is-enabled servex 2>/dev/null", timeout=5)
-    dir_check = await run_cmd("test -d /opt/servex", timeout=5)
+@app.get("/api/selfex/status")
+async def selfex_status():
+    """Check if selfEx is installed and return its URL."""
+    svc = await run_cmd("systemctl is-enabled selfex 2>/dev/null", timeout=5)
+    dir_check = await run_cmd("test -d /opt/selfex", timeout=5)
     installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
 
     url = None
@@ -133,7 +133,7 @@ async def servex_status():
             dns = data.get("Self", {}).get("DNSName", "")
             if dns:
                 hostname = dns.rstrip(".")
-                url = f"https://{hostname}:3359/"
+                url = f"https://{hostname}:3362/"
         except (json.JSONDecodeError, KeyError):
             pass
 

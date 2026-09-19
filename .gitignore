@@ -26,4 +26,4 @@ credentials*.json
 *token*.json
 
 # --- ネストした別リポジトリのチェックアウト(管理対象外) ---
-servex/
+selfex/
