@@ -753,83 +753,170 @@ select:disabled {
   margin-top: 1rem;
 }
 
-/* ── Disk Layout Bar (GParted-like) ── */
-.disk-layout-wrap {
-  margin: 0.6rem 0;
+/* ── Disk Info (Disk Manager「パーティション操作」と同構成・表示専用) ── */
+.disk-note {
+  padding: 0.6rem 0.8rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+  line-height: 1.7;
 }
 
-.disk-layout-bar {
+.disk-legend {
   display: flex;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.disk-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.disk-sw {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.disk-sw-free {
+  background: repeating-linear-gradient(45deg, var(--bg-base), var(--bg-base) 3px, var(--border) 3px, var(--border) 6px);
+}
+
+.disk-dev {
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  margin-bottom: 14px;
+  background: var(--bg-secondary);
+}
+
+.disk-dev-path {
+  font-size: 1.05em;
+  font-weight: bold;
+  color: var(--text-primary);
+}
+
+.disk-dev-meta {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.6;
+}
+
+.disk-dev-meta .disk-serial {
+  color: var(--accent);
+  font-family: 'Fira Code', monospace;
+}
+
+.disk-sys-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.75em;
+  font-weight: bold;
+  background: rgba(234, 179, 8, 0.2);
+  color: #eab308;
+  margin-left: 8px;
+}
+
+.disk-pbar {
+  display: flex;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 12px;
   background: var(--bg-base);
 }
 
-.disk-layout-seg {
+.disk-seg {
   position: relative;
+  border-right: 1px solid var(--bg-base);
+  min-width: 8px;
+  overflow: hidden;
+}
+
+.disk-seg:last-child {
+  border-right: none;
+}
+
+.disk-seg .disk-used {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.disk-seg .disk-seg-label {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 2px;
-  transition: filter 0.15s;
-  overflow: hidden;
-  border-left: 1px solid var(--bg-base);
-}
-
-.disk-layout-seg:hover {
-  filter: brightness(1.25);
-}
-
-.disk-layout-seg-label {
-  font-size: 0.65rem;
-  font-weight: 600;
+  font-size: 0.72em;
+  font-weight: bold;
   color: #fff;
-  text-align: center;
-  line-height: 1.15;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   white-space: nowrap;
-  pointer-events: none;
-  padding: 0 2px;
+  overflow: hidden;
+  padding: 0 4px;
 }
 
-.disk-layout-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.9rem;
-  margin-top: 0.45rem;
-  padding: 0 0.1rem;
+.disk-seg.disk-free {
+  background: repeating-linear-gradient(45deg, var(--bg-base), var(--bg-base) 6px, var(--bg-secondary) 6px, var(--bg-secondary) 12px);
 }
 
-.disk-layout-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.72rem;
+.disk-seg.disk-free .disk-seg-label {
+  color: var(--text-muted);
+  text-shadow: none;
+}
+
+.disk-part-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 0.82em;
+}
+
+.disk-part-table th,
+.disk-part-table td {
+  border: 1px solid var(--border);
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.disk-part-table th {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+
+.disk-part-table td {
+  font-family: 'Fira Code', monospace;
   color: var(--text-secondary);
 }
 
-.disk-layout-legend-dot {
-  width: 8px;
+.disk-ubar {
   height: 8px;
-  border-radius: 2px;
-  flex-shrink: 0;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 80px;
 }
 
-.disk-layout-legend-size {
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.disk-layout-legend-fs {
-  color: var(--text-muted);
-  font-size: 0.65rem;
-}
-
-.disk-layout-legend-mount {
-  color: var(--accent);
-  font-size: 0.65rem;
+.disk-ubar > div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
 }
 
 /* ── Fleet (serv-UI一括管理) ── */
