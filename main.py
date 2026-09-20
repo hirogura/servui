@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.2.0")
+app = FastAPI(title="serv-UI", version="2.2.1")
 
 
 @app.middleware("http")
@@ -330,11 +330,13 @@ async def _collect_listening_ports() -> dict:
     result = await run_cmd("ss -tulnp 2>/dev/null", timeout=15)
     error = None
     local_idx = 4
+    using_netstat = False
     if result["returncode"] != 0 or not result["stdout"].strip():
-        alt = await run_cmd("netstat -tuln 2>/dev/null", timeout=15)
+        alt = await run_cmd("netstat -tulnp 2>/dev/null", timeout=15)
         if alt["returncode"] == 0 and alt["stdout"].strip():
             result = alt
             local_idx = 3
+            using_netstat = True
         else:
             error = f"ss rc={result['returncode']}: {result['stderr'].strip()[:200]}"
 
@@ -366,14 +368,26 @@ async def _collect_listening_ports() -> dict:
         if not port.isdigit():
             continue
 
-        procs = re.findall(r'\(\("([^"]+)",pid=(\d+)', line.rsplit(" ", 1)[-1])
+        # NOTE: ss pads lines with trailing spaces, so searching only the
+        # last whitespace-separated token (line.rsplit(" ", 1)[-1]) yields ""
+        # and drops every process. Always search the whole line.
         proc_names = []
         pids = []
-        for name, pid in procs:
-            if name not in proc_names:
-                proc_names.append(name)
-            if pid not in pids:
-                pids.append(pid)
+        if using_netstat:
+            # netstat -tulnp format: "... LISTEN 1234/sshd" ("-" when unknown)
+            m = re.search(r"\s(\d+)/([^\s]+)\s*$", line.rstrip())
+            if m:
+                pid, name = m.group(1), m.group(2).split(":")[0]
+                if name not in ("-", ""):
+                    proc_names.append(name)
+                    pids.append(pid)
+        else:
+            procs = re.findall(r'\(\("([^"]+)",pid=(\d+)', line)
+            for name, pid in procs:
+                if name not in proc_names:
+                    proc_names.append(name)
+                if pid not in pids:
+                    pids.append(pid)
 
         key = (proto, host, port)
         if key in rows:
@@ -392,6 +406,77 @@ async def _collect_listening_ports() -> dict:
                 "pids": pids,
                 "access": classify(host),
             }
+
+    # Fallback/supplement via psutil: ss/netstat may hide processes
+    # (non-root, truncated output, permission errors). Fill rows that
+    # still have no process info from kernel socket table.
+    try:
+        need_fill = any(not r["processes"] for r in rows.values())
+    except Exception:
+        need_fill = False
+    if need_fill:
+        try:
+            import socket as _socket
+
+            _pid_name_cache: dict[int, str] = {}
+
+            def _proc_name(pid) -> str:
+                try:
+                    pid_int = int(pid)
+                except (TypeError, ValueError):
+                    return ""
+                if pid_int in _pid_name_cache:
+                    return _pid_name_cache[pid_int]
+                try:
+                    name = psutil.Process(pid_int).name() or ""
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    name = ""
+                except Exception:
+                    name = ""
+                _pid_name_cache[pid_int] = name
+                return name
+
+            # (proto, port) -> {"names": [...], "pids": [...]}
+            listen_map: dict[tuple[str, int], dict] = {}
+            try:
+                conns = psutil.net_connections(kind="inet")
+            except Exception:
+                conns = []
+            for c in conns:
+                try:
+                    if c.type == _socket.SOCK_DGRAM:
+                        cproto = "udp"
+                    elif c.type == _socket.SOCK_STREAM:
+                        # TCP: only listening sockets are relevant
+                        if c.status != "LISTEN":
+                            continue
+                        cproto = "tcp"
+                    else:
+                        continue
+                    if not c.laddr:
+                        continue
+                    cport = int(c.laddr.port)
+                    if not c.pid:
+                        continue
+                    key2 = (cproto, cport)
+                    entry = listen_map.setdefault(key2, {"names": [], "pids": []})
+                    pid_s = str(c.pid)
+                    if pid_s not in entry["pids"]:
+                        entry["pids"].append(pid_s)
+                    nm = _proc_name(c.pid)
+                    if nm and nm not in entry["names"]:
+                        entry["names"].append(nm)
+                except Exception:
+                    continue
+            for r in rows.values():
+                if r["processes"]:
+                    continue
+                hit = listen_map.get((r["proto"], r["port"]))
+                if hit:
+                    r["processes"] = hit["names"]
+                    r["pids"] = hit["pids"]
+        except Exception:
+            pass
 
     # Host IP addresses per interface (loopback excluded)
     ips = []
