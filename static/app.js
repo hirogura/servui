@@ -1444,10 +1444,10 @@ async function downloadIsoFromWeb() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     });
-    const data = await resp.json();
+    const data = await parseApiJson(resp);
     if (!data.success) {
       statusEl.className = 'status-msg show error';
-      statusEl.textContent = data.message;
+      statusEl.textContent = data.message || data.detail || 'ダウンロード開始に失敗しました';
       btn.disabled = false;
       return;
     }
@@ -1556,10 +1556,10 @@ async function downloadUbuntuIso() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     });
-    const data = await resp.json();
+    const data = await parseApiJson(resp);
     if (!data.success) {
       statusEl.className = 'status-msg show error';
-      statusEl.textContent = data.message;
+      statusEl.textContent = data.message || data.detail || 'ダウンロード開始に失敗しました';
       btn.disabled = false;
       if (fileSel) fileSel.disabled = false;
       if (fileBtn) fileBtn.disabled = false;
@@ -1579,6 +1579,20 @@ async function downloadUbuntuIso() {
 }
 
 // --- Helpers ---
+async function parseApiJson(resp) {
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (e) {
+    throw new Error(`HTTP ${resp.status}: ${text.slice(0, 120) || resp.statusText || 'Invalid response'}`);
+  }
+  if (!resp.ok) {
+    throw new Error((data && (data.detail || data.message)) || `HTTP ${resp.status}`);
+  }
+  return data;
+}
+
 function formatBytesJS(b) {
   if (b >= 1024**3) return (b / 1024**3).toFixed(1) + ' GB';
   if (b >= 1024**2) return (b / 1024**2).toFixed(0) + ' MB';
@@ -1938,10 +1952,10 @@ async function downloadClonezillaIso() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, filename }),
     });
-    const data = await resp.json();
+    const data = await parseApiJson(resp);
     if (!data.success) {
       statusEl.className = 'status-msg show error';
-      statusEl.textContent = data.message;
+      statusEl.textContent = data.message || data.detail || 'ダウンロード開始に失敗しました';
       dlBtn.disabled = false;
       fileSel.disabled = false;
       document.getElementById('btn-cz-files').disabled = false;

@@ -64,8 +64,8 @@ def _sudo(cmd: str) -> str:
 async def _get_json(req: Request) -> dict:
     """Parse JSON body, returning 400 instead of 500 on malformed input."""
     try:
-        data = await _get_json(req)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = await req.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         raise HTTPException(status_code=400, detail="invalid JSON body")
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="JSON body must be an object")
