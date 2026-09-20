@@ -1579,6 +1579,13 @@ async function downloadUbuntuIso() {
 }
 
 // --- Helpers ---
+function formatBytesJS(b) {
+  if (b >= 1024**3) return (b / 1024**3).toFixed(1) + ' GB';
+  if (b >= 1024**2) return (b / 1024**2).toFixed(0) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   const div = document.createElement('div');
