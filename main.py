@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.4.3")
+app = FastAPI(title="serv-UI", version="2.5.3")
 
 
 @app.middleware("http")
@@ -2327,7 +2327,7 @@ async def system_selfupdate():
 
     The updater runs independently of this server, so it always finishes
     even though the files being replaced belong to the running service.
-    Applying the new version (service restart) is done manually by the user.
+    完了後はフロントエンドが自動で再起動→リフレッシュを実行する。
     """
     try:
         with open(SERVUI_UPDATE_PID, encoding="utf-8") as f:

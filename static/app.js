@@ -57,20 +57,68 @@ function refreshCurrentTab() {
   switchTab(currentTab);
 }
 
-async function restartServUI() {
-  if (!confirm('serv-UIを再起動しますか？')) return;
+async function restartServUI(auto = false) {
+  // auto=true の場合は確認ダイアログを出さずに再起動する (アップデート完了後の自動連携用)
+  if (!auto && !confirm('serv-UIを再起動しますか？')) return false;
   try {
     const resp = await fetch('/api/servui/restart', { method: 'POST' });
     const data = await resp.json();
     if (data.success) {
-      showStatus('serv-UIを再起動しました。3秒後にページを更新します。', 'success');
-      setTimeout(() => location.reload(), 3000);
+      if (!auto) {
+        showStatus('serv-UIを再起動しました。3秒後にページを更新します。', 'success');
+        setTimeout(() => location.reload(), 3000);
+      }
+      return true;
     } else {
       showStatus(`再起動に失敗しました: ${data.errors || data.stderr}`, 'error');
+      return false;
     }
   } catch (e) {
     showStatus(`再起動エラー: ${e.message}`, 'error');
+    return false;
   }
+}
+
+// 再起動後の復旧待ち (アップデート完了後の自動連携用)
+async function waitForServUI(timeoutMs = 60000) {
+  const start = Date.now();
+  // 再起動開始直後は旧プロセスがまだ応答するため、少し待ってから確認する
+  await new Promise(r => setTimeout(r, 4000));
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const resp = await fetch('/api/system/info', { cache: 'no-store' });
+      if (resp.ok) return true;
+    } catch (e) {
+      // 再起動中は接続失敗するので継続する
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return false;
+}
+
+// アップデート完了後の自動連携: 再起動 → リフレッシュ → リロード
+async function autoRestartAndRefreshAfterUpdate() {
+  showStatus('アップデート完了！自動で「serv-UI再起動」を実行します...', 'success');
+  const ok = await restartServUI(true);
+  if (!ok) {
+    showStatus('自動再起動に失敗しました。サイドバーの「serv-UI再起動」を手動で実行してください', 'error');
+    return;
+  }
+  showStatus('serv-UIを再起動中...復旧後に自動でリフレッシュします', 'info');
+  const back = await waitForServUI(60000);
+  if (!back) {
+    showStatus('再起動コマンドを送信しました。ページを手動で更新してください', 'info');
+    setTimeout(() => location.reload(), 2000);
+    return;
+  }
+  showStatus('再起動完了！自動で「serv-UIリフレッシュ」を実行します', 'success');
+  try {
+    refreshCurrentTab();
+  } catch (e) {
+    console.error('Auto refresh error:', e);
+  }
+  // 新版の app.js/index.html を確実に取得するためリロードする
+  setTimeout(() => location.reload(), 1000);
 }
 
 async function rebootSystem() {
@@ -92,7 +140,7 @@ async function rebootSystem() {
 let servuiUpdateState = null; // { t, phase }
 
 async function updateServUI() {
-  if (!confirm('serv-UIを更新しますか？\nGitHubから最新版を取得してセットアップします。\n\n・完了まで数分かかる場合があります\n・完了後、サイドバーの「serv-UI再起動」で再起動すると新版が有効になります')) return;
+  if (!confirm('serv-UIを更新しますか？\nGitHubから最新版を取得してセットアップします。\n\n・完了まで数分かかる場合があります\n・完了後は自動で「serv-UI再起動」→「serv-UIリフレッシュ」を実行します')) return;
 
   showStatus('アップデートを開始しています...', 'info');
   try {
@@ -123,7 +171,8 @@ function pollServuiUpdate() {
       if (!st || st.phase !== 'watching') return;
       if (data.done && !data.running) {
         st.phase = 'done';
-        showStatus('アップデート完了！サイドバーの「serv-UI再起動」を実行すると新版が有効になります', 'success');
+        // アップデート完了後は自動で再起動→リフレッシュを実行する
+        autoRestartAndRefreshAfterUpdate();
         return;
       }
       if (!data.running && !data.done) {
