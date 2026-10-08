@@ -544,6 +544,15 @@ async function upgradeAll() {
   }
 }
 
+// アップデート ターミナル実行版: Cachy-UIの「Cachy-Update ターミナル」と同等。
+// backendのupgradeAllと同フロー (apt update → dpkg修復 → 依存関係修復 → apt upgrade) を
+// ターミナルで実行し、進捗をその場で確認できるようにする。
+function upgradeTerminal() {
+  if (!confirm('アップデートをターミナルで実行しますか？\n\nターミナル画面に移動し、リスト更新 → 依存関係の修復 → 全パッケージ更新の順に実行します。\n進捗はターミナルで確認できます。')) return;
+  const cmd = "sudo apt-get update && sudo dpkg --configure -a && sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' && sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'";
+  sendToTerminal(cmd, 'アップデートをターミナルで実行します');
+}
+
 async function fixPackages() {
   const status = document.getElementById('package-status');
   status.className = 'status-msg show info';
