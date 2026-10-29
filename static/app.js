@@ -48,6 +48,8 @@ function switchTab(tab) {
     loadBackupPage();
   } else if (tab === 'timeshift') {
     loadTimeshiftPage();
+  } else if (tab === 'apps') {
+    loadAppsPage();
   } else if (tab === 'fleet') {
     loadFleetPage();
   }
@@ -2628,6 +2630,343 @@ function showTimeshiftStatus(msg, type) {
   el.className = `status-msg show ${type}`;
   clearTimeout(el._timer);
   el._timer = setTimeout(() => { el.className = 'status-msg'; }, 6000);
+}
+
+// --- Apps / Settings ---
+const APPS_INSTALL_DEFS = [
+  { key: 'chrome', label: 'Google Chrome', desc: '公式 .deb パッケージを取得してインストール' },
+  { key: 'edge', label: 'Microsoft Edge', desc: '公式 .deb パッケージを取得してインストール' },
+  { key: 'thunderbird', label: 'Thunderbird', desc: 'thunderbird + 日本語 language pack' },
+  { key: 'libreoffice', label: 'LibreOffice', desc: 'libreoffice + 日本語 language pack / help' },
+  { key: 'vlc', label: 'VLC', desc: 'VLC メディアプレイヤー' },
+  { key: 'ssh', label: 'SSH', desc: 'openssh-server を導入し sshd を有効化・起動' },
+];
+
+async function loadAppsPage() {
+  await loadAppsStatus();
+  await loadAppsShortcuts();
+  await loadVentoyUI();
+  await loadLidSwitch();
+}
+
+// --- アプリのインストール ---
+async function loadAppsStatus() {
+  const listEl = document.getElementById('apps-install-list');
+  const statusEl = document.getElementById('apps-status-msg');
+  listEl.innerHTML = '<p class="muted"><span class="spinner"></span> 導入状態を確認中...</p>';
+  try {
+    const resp = await fetch('/api/apps/status');
+    const data = await resp.json();
+    const apps = data.apps || {};
+    listEl.innerHTML = APPS_INSTALL_DEFS.map(def => {
+      const st = apps[def.key] || {};
+      const badge = st.installed
+        ? '<span class="badge badge-active">導入済み</span>'
+        : '<span class="badge badge-other">未導入</span>';
+      return `
+        <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.45rem 0;border-bottom:1px solid var(--border);">
+          <input type="checkbox" class="apps-install-check" value="${def.key}" style="margin-top:0.25rem;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <span style="font-weight:600;">${escapeHtml(def.label)}</span>${badge}
+            </div>
+            <div class="muted" style="font-size:0.78rem;">${escapeHtml(def.desc)}${st.detail ? ` — <span style="font-family:monospace;">${escapeHtml(st.detail)}</span>` : ''}</div>
+          </div>
+        </div>`;
+    }).join('');
+    statusEl.className = 'status-msg';
+    statusEl.textContent = '';
+  } catch (e) {
+    listEl.innerHTML = '';
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `状態取得エラー: ${e.message}`;
+  }
+}
+
+async function installSelectedApps() {
+  const checks = Array.from(document.querySelectorAll('.apps-install-check:checked'));
+  if (checks.length === 0) {
+    showStatus('インストールするアプリを選択してください', 'error');
+    return;
+  }
+  const keys = checks.map(c => c.value);
+  const labels = keys.map(k => (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k).join(', ');
+  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のダウンロード等)。完了までこのページを開いたままお待ちください。`)) return;
+  const statusEl = document.getElementById('apps-install-status');
+  const btn = document.getElementById('btn-apps-install');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> インストール中... (数分かかる場合があります)';
+  try {
+    const resp = await fetch('/api/apps/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apps: keys }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const results = data.results || {};
+    const lines = keys.map(k => {
+      const r = results[k] || {};
+      const label = (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k;
+      return `${r.success ? '✅' : '❌'} ${label}`;
+    }).join('\n');
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = `${data.message || ''}\n${lines}`;
+    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
+    loadAppsStatus();
+    loadAppsShortcuts();
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- デスクトップショートカット ---
+async function loadAppsShortcuts() {
+  const listEl = document.getElementById('apps-shortcut-list');
+  const statusEl = document.getElementById('apps-shortcut-status');
+  listEl.innerHTML = '<p class="muted"><span class="spinner"></span> ショートカット情報を取得中...</p>';
+  try {
+    const resp = await fetch('/api/apps/shortcuts');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const items = data.shortcuts || [];
+    if (data.desktop_dir) {
+      listEl.innerHTML = `<p class="muted" style="margin-bottom:0.5rem;">保存先: <code>${escapeHtml(data.desktop_dir)}</code></p>` +
+        items.map(it => {
+          const badge = it.created
+            ? '<span class="badge badge-active">作成済み</span>'
+            : it.source_found
+              ? '<span class="badge badge-other">未作成</span>'
+              : '<span class="badge badge-warn">アプリ未導入</span>';
+          const disabled = it.source_found ? '' : 'disabled';
+          return `
+            <div style="display:flex;gap:0.6rem;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border);">
+              <input type="checkbox" class="apps-shortcut-check" value="${escapeHtml(it.key)}" ${disabled}>
+              <span style="flex:1;">${escapeHtml(it.label)}</span>${badge}
+            </div>`;
+        }).join('');
+    }
+    statusEl.className = 'status-msg';
+    statusEl.textContent = '';
+  } catch (e) {
+    listEl.innerHTML = '';
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `ショートカット情報取得エラー: ${e.message}`;
+  }
+}
+
+async function createSelectedShortcuts() {
+  const checks = Array.from(document.querySelectorAll('.apps-shortcut-check:checked'));
+  if (checks.length === 0) {
+    showStatus('作成するショートカットを選択してください', 'error');
+    return;
+  }
+  const keys = checks.map(c => c.value);
+  const statusEl = document.getElementById('apps-shortcut-status');
+  const btn = document.getElementById('btn-apps-shortcut');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> ショートカットを作成中...';
+  try {
+    const resp = await fetch('/api/apps/shortcuts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shortcuts: keys }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = data.message || '';
+    showStatus(data.message || 'ショートカットを作成しました', data.success ? 'success' : 'error');
+    loadAppsShortcuts();
+  } catch (e) {
+    btn.disabled = false;
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  }
+}
+
+// --- Webアプリ: Ventoy-UI ---
+async function loadVentoyUI() {
+  const badgeEl = document.getElementById('ventoy-ui-badge');
+  const detailEl = document.getElementById('ventoy-ui-detail');
+  const statusEl = document.getElementById('ventoy-ui-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/ventoyui/status');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderVentoyUI(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderVentoyUI(data) {
+  const badgeEl = document.getElementById('ventoy-ui-badge');
+  const detailEl = document.getElementById('ventoy-ui-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.installed
+    ? '<span class="badge badge-active">導入済み</span>'
+    : '<span class="badge badge-other">未導入</span>';
+  if (detailEl) {
+    const parts = [];
+    if (data.active) parts.push(`サービス: ${data.active}`);
+    if (data.url) parts.push(data.url);
+    else if (data.installed) parts.push('URLを取得できませんでした');
+    detailEl.textContent = parts.join(' / ');
+  }
+}
+
+async function installVentoyUI() {
+  const statusEl = document.getElementById('ventoy-ui-status');
+  const btn = document.getElementById('btn-ventoy-ui-install');
+  if (!confirm('Ventoy-UIをインストールしますか？\n\n/opt/ventoy-ui に取得し、systemd サービス (ventoy-ui) として登録・起動します。\n数分かかる場合があります。')) return;
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> インストール中...';
+  }
+  try {
+    const resp = await fetch('/api/ventoyui/install', { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (btn) btn.disabled = false;
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (statusEl) {
+      statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+      statusEl.textContent = data.message || '';
+    }
+    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
+    loadVentoyUI();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  }
+}
+
+async function openVentoyUI() {
+  const statusEl = document.getElementById('ventoy-ui-status');
+  try {
+    const resp = await fetch('/api/ventoyui/status');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderVentoyUI(data);
+    if (data.installed && data.url) {
+      window.open(data.url, '_blank');
+      return;
+    }
+    if (data.installed) {
+      if (statusEl) {
+        statusEl.className = 'status-msg show info';
+        statusEl.textContent = 'Ventoy-UIはインストール済みですが、URLを取得できませんでした。';
+      }
+      showStatus('Ventoy-UIはインストール済みです。URLを取得できませんでした。', 'info');
+      return;
+    }
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = 'Ventoy-UIはまだインストールされていません。「インストール」を押してください。';
+    }
+    showStatus('Ventoy-UIはまだインストールされていません', 'error');
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  }
+}
+
+// --- 設定: ノートPCで画面を閉じてもスリープしない (systemd-logind) ---
+async function loadLidSwitch() {
+  const badgeEl = document.getElementById('lid-switch-badge');
+  const detailEl = document.getElementById('lid-switch-detail');
+  const statusEl = document.getElementById('lid-switch-status');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = '<span class="badge badge-other">確認中...</span>';
+  if (detailEl) detailEl.textContent = '';
+  if (statusEl) { statusEl.className = 'status-msg'; statusEl.textContent = ''; }
+  try {
+    const resp = await fetch('/api/system/lid-switch');
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    renderLidSwitch(data);
+  } catch (e) {
+    badgeEl.innerHTML = '<span class="badge badge-other">不明</span>';
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `状態取得エラー: ${e.message}`;
+    }
+  }
+}
+
+function renderLidSwitch(data) {
+  const badgeEl = document.getElementById('lid-switch-badge');
+  const detailEl = document.getElementById('lid-switch-detail');
+  if (!badgeEl) return;
+  badgeEl.innerHTML = data.enabled
+    ? '<span class="badge badge-active">有効</span>'
+    : '<span class="badge badge-other">無効</span>';
+  if (detailEl) detailEl.textContent = data.detail || '';
+}
+
+async function setLidSwitch(enable) {
+  const statusEl = document.getElementById('lid-switch-status');
+  const btnEnable = document.getElementById('btn-lid-switch-enable');
+  const btnDisable = document.getElementById('btn-lid-switch-disable');
+  if (!confirm(enable
+    ? '「ノートPCで画面を閉じてもスリープしない」を有効にしますか？\n蓋閉じ時の動作を ignore に設定し systemd-logind を再起動します。'
+    : '「ノートPCで画面を閉じてもスリープしない」を無効にしますか？\n蓋を閉じると通常通りスリープするよう戻します。')) return;
+  if (btnEnable) btnEnable.disabled = true;
+  if (btnDisable) btnDisable.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'status-msg show info';
+    statusEl.innerHTML = '<span class="spinner"></span> 設定を適用中...';
+  }
+  try {
+    const resp = await fetch('/api/system/lid-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    if (data.success) {
+      if (statusEl) {
+        statusEl.className = 'status-msg show success';
+        statusEl.textContent = data.message || '設定を適用しました。';
+      }
+      renderLidSwitch(data);
+      showStatus(data.message || '設定を適用しました', 'success');
+    } else {
+      if (statusEl) {
+        statusEl.className = 'status-msg show error';
+        statusEl.textContent = data.message || '設定に失敗しました。';
+      }
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'status-msg show error';
+      statusEl.textContent = `エラー: ${e.message}`;
+    }
+  } finally {
+    if (btnEnable) btnEnable.disabled = false;
+    if (btnDisable) btnDisable.disabled = false;
+  }
 }
 
 // --- serv-UI Fleet (一括管理) ---

@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.8.0")
+app = FastAPI(title="serv-UI", version="2.9.0")
 
 
 @app.middleware("http")
@@ -2473,6 +2473,455 @@ async def timeshift_delete(req: Request):
         "success": r["returncode"] == 0,
         "message": f"スナップショット {snapshot_id} ({target['name']}) を削除しました" if r["returncode"] == 0 else f"削除に失敗しました: {r['stderr'] or r['stdout']}",
     }
+
+
+# ============================================================
+# 8. アプリ/設定 (Cachy-UI の「アプリ/設定」ページを参考にした、apt 版)
+# ============================================================
+# Cachy-UI (https://github.com/hirogura/cachyos-cachyui.git) を参考に作成。
+# パッケージ操作は Ubuntu/Debian 向けの apt に置き換えている。
+APP_INSTALL_KEYS = ("chrome", "edge", "thunderbird", "libreoffice", "vlc", "ssh")
+
+APP_LABELS: dict[str, str] = {
+    "chrome": "Google Chrome",
+    "edge": "Microsoft Edge",
+    "thunderbird": "Thunderbird",
+    "libreoffice": "LibreOffice",
+    "vlc": "VLC",
+    "ssh": "SSH",
+}
+
+CHROME_DEB_URL = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+EDGE_DEB_URL = "https://go.microsoft.com/fwlink?linkid=2099617"
+
+
+async def _dpkg_installed_status(package: str) -> dict:
+    """dpkg での導入状態を確認する。"""
+    q = await run_cmd(f"dpkg -s {shlex.quote(package)} 2>/dev/null | grep -q 'ok installed'", timeout=10)
+    v = await run_cmd(f"dpkg-query -W -f='${{Version}}' {shlex.quote(package)} 2>/dev/null", timeout=10)
+    installed = q["returncode"] == 0
+    detail = v["stdout"].strip() if (installed and v["returncode"] == 0 and v["stdout"].strip()) else ""
+    return {"installed": installed, "detail": detail}
+
+
+async def _check_app_status() -> dict:
+    status: dict = {}
+
+    status["chrome"] = await _dpkg_installed_status("google-chrome-stable")
+    if not status["chrome"]["installed"]:
+        w_chrome = await run_cmd("which google-chrome google-chrome-stable 2>/dev/null", timeout=5)
+        status["chrome"]["installed"] = w_chrome["returncode"] == 0
+
+    status["edge"] = await _dpkg_installed_status("microsoft-edge-stable")
+    if not status["edge"]["installed"]:
+        w_edge = await run_cmd("which microsoft-edge-stable microsoft-edge 2>/dev/null", timeout=5)
+        status["edge"]["installed"] = w_edge["returncode"] == 0
+
+    status["thunderbird"] = await _dpkg_installed_status("thunderbird")
+    status["vlc"] = await _dpkg_installed_status("vlc")
+
+    lo = await _dpkg_installed_status("libreoffice-core")
+    if not lo["installed"]:
+        w_lo = await run_cmd("which libreoffice 2>/dev/null", timeout=5)
+        lo["installed"] = w_lo["returncode"] == 0
+    status["libreoffice"] = lo
+
+    q_ssh = await _dpkg_installed_status("openssh-server")
+    en_ssh = await run_cmd("systemctl is-enabled ssh 2>/dev/null", timeout=5)
+    ac_ssh = await run_cmd("systemctl is-active ssh 2>/dev/null", timeout=5)
+    svc_on = en_ssh["stdout"].strip() == "enabled" or ac_ssh["stdout"].strip() == "active"
+    svc_state = f"{en_ssh['stdout'].strip()} / {ac_ssh['stdout'].strip()}" if (en_ssh["stdout"].strip() or ac_ssh["stdout"].strip()) else ""
+    status["ssh"] = {
+        "installed": q_ssh["installed"] or svc_on,
+        "detail": svc_state or q_ssh["detail"],
+    }
+    return status
+
+
+async def _install_single_app(key: str) -> dict:
+    """アプリを1件インストールする。戻り値: {success, output}。"""
+    logs: list[str] = []
+
+    async def _step(cmd: str, timeout: int = 900) -> bool:
+        r = await run_cmd(cmd, timeout=timeout)
+        if r["stdout"].strip():
+            logs.append(r["stdout"].strip()[-2000:])
+        if r["returncode"] != 0:
+            logs.append(f"エラー: {(r['stderr'] or r['stdout']).strip()[-2000:]}")
+            return False
+        return True
+
+    if key == "chrome":
+        if not await _step(f"curl -fsSL {CHROME_DEB_URL} -o /tmp/google-chrome-stable.deb", timeout=300):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(_sudo("apt-get install -y /tmp/google-chrome-stable.deb"), timeout=1800)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "edge":
+        if not await _step(f"curl -fsSL '{EDGE_DEB_URL}' -o /tmp/microsoft-edge-stable.deb", timeout=300):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(_sudo("apt-get install -y /tmp/microsoft-edge-stable.deb"), timeout=1800)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "thunderbird":
+        ok = await _step(_sudo("apt-get install -y thunderbird thunderbird-locale-ja"), timeout=1800)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "libreoffice":
+        ok = await _step(_sudo("apt-get install -y libreoffice libreoffice-l10n-ja libreoffice-help-ja"), timeout=1800)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "vlc":
+        ok = await _step(_sudo("apt-get install -y vlc"), timeout=1800)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "ssh":
+        if not await _step(_sudo("apt-get install -y openssh-server"), timeout=1800):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(_sudo("systemctl enable --now ssh"), timeout=120)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    return {"success": False, "output": "不明なアプリ指定です"}
+
+
+@app.get("/api/apps/status")
+async def apps_status():
+    """各アプリの導入状態を返す。"""
+    return {"apps": await _check_app_status()}
+
+
+@app.post("/api/apps/install")
+async def apps_install(req: Request):
+    """チェックされたアプリをインストールする。"""
+    data = await _get_json(req)
+    keys = data.get("apps") or []
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="apps are required")
+    clean = [k for k in keys if k in APP_INSTALL_KEYS]
+    if not clean:
+        raise HTTPException(status_code=400, detail="invalid apps")
+    seen: list[str] = []
+    for k in clean:
+        if k not in seen:
+            seen.append(k)
+    results: dict = {}
+    for k in seen:
+        results[k] = await _install_single_app(k)
+    success = all(v["success"] for v in results.values())
+    summary = ", ".join(f"{APP_LABELS[k]}: {'OK' if v['success'] else 'NG'}" for k, v in results.items())
+    return {"success": success, "results": results, "message": summary}
+
+
+# --- デスクトップショートカット (.desktop をデスクトップへコピー) ---
+SHORTCUT_DEFS: dict[str, dict] = {
+    "google-chrome": {"label": "Google Chrome", "candidates": ["google-chrome.desktop"]},
+    "microsoft-edge": {"label": "Microsoft Edge", "candidates": ["microsoft-edge.desktop", "microsoft-edge-stable.desktop", "com.microsoft.Edge.desktop"]},
+    "thunderbird": {"label": "Thunderbird", "candidates": ["thunderbird.desktop", "org.mozilla.Thunderbird.desktop"]},
+    "libreoffice-calc": {"label": "LibreOffice Calc", "candidates": ["libreoffice-calc.desktop", "org.libreoffice.calc.desktop"]},
+    "libreoffice-writer": {"label": "LibreOffice Writer", "candidates": ["libreoffice-writer.desktop", "org.libreoffice.writer.desktop"]},
+    "libreoffice-impress": {"label": "LibreOffice Impress", "candidates": ["libreoffice-impress.desktop", "org.libreoffice.impress.desktop"]},
+    "vlc": {"label": "VLC", "candidates": ["vlc.desktop"]},
+}
+
+SHORTCUT_APPDIRS = [
+    "/usr/local/share/applications",
+    "/usr/share/applications",
+    ".local/share/applications",  # ホーム相対
+    ".local/share/flatpak/exports/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    "/var/lib/snapd/desktop/applications",
+]
+
+
+def _get_desktop_dir(username: str, home: str) -> str:
+    """プライマリユーザーのデスクトップディレクトリを取得する。"""
+    dest = ""
+    r = subprocess.run(
+        ["sudo", "-u", username, "xdg-user-dir", "DESKTOP"],
+        capture_output=True, text=True, timeout=10,
+    ) if IS_ROOT else subprocess.run(
+        ["xdg-user-dir", "DESKTOP"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        dest = r.stdout.strip()
+    if not dest:
+        cand_jp = os.path.join(home, "デスクトップ")
+        dest = cand_jp if os.path.isdir(cand_jp) else os.path.join(home, "Desktop")
+    os.makedirs(dest, exist_ok=True)
+    try:
+        pw = pwd.getpwnam(username)
+        os.chown(dest, pw.pw_uid, pw.pw_gid)
+    except Exception:
+        pass
+    return dest
+
+
+def _find_desktop_source(candidates: list[str], home: str) -> str | None:
+    """XDG 標準ディレクトリから .desktop ファイルを探す。"""
+    for d in SHORTCUT_APPDIRS:
+        base = os.path.join(home, d) if d.startswith(".") else d
+        if not os.path.isdir(base):
+            continue
+        for f in candidates:
+            full = os.path.join(base, f)
+            if os.path.isfile(full):
+                return full
+    return None
+
+
+def _chown_user(path: str, username: str) -> None:
+    try:
+        pw = pwd.getpwnam(username)
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except Exception:
+        pass
+
+
+@app.get("/api/apps/shortcuts")
+async def apps_shortcuts_list():
+    """作成可能なショートカット一覧 (ソース有無・作成済み) を返す。"""
+    username, home, _shell = get_primary_user()
+    try:
+        desktop_dir = await asyncio.to_thread(_get_desktop_dir, username, home)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"デスクトップディレクトリを取得できませんでした: {e}")
+    items = []
+    for key, spec in SHORTCUT_DEFS.items():
+        src_path = await asyncio.to_thread(_find_desktop_source, spec["candidates"], home)
+        dest = os.path.join(desktop_dir, os.path.basename(src_path)) if src_path else ""
+        items.append({
+            "key": key,
+            "label": spec["label"],
+            "source_found": bool(src_path),
+            "created": bool(dest) and os.path.isfile(dest),
+            "dest": dest,
+        })
+    return {"desktop_dir": desktop_dir, "shortcuts": items}
+
+
+@app.post("/api/apps/shortcuts")
+async def apps_shortcuts_create(req: Request):
+    """チェックされたデスクトップショートカットを作成する。"""
+    data = await _get_json(req)
+    keys = data.get("shortcuts") or []
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="shortcuts are required")
+    clean = [k for k in keys if k in SHORTCUT_DEFS]
+    if not clean:
+        raise HTTPException(status_code=400, detail="invalid shortcuts")
+    username, home, _shell = get_primary_user()
+    try:
+        desktop_dir = await asyncio.to_thread(_get_desktop_dir, username, home)
+    except Exception as e:
+        return {"success": False, "message": f"デスクトップディレクトリを取得できませんでした: {e}"}
+    results: dict = {}
+    for key in dict.fromkeys(clean):
+        spec = SHORTCUT_DEFS[key]
+        try:
+            src = await asyncio.to_thread(_find_desktop_source, spec["candidates"], home)
+            if not src:
+                results[key] = {"success": False, "message": ".desktop ファイルが見つかりません (アプリ未インストールの可能性)"}
+                continue
+            dest = os.path.join(desktop_dir, os.path.basename(src))
+
+            def _copy() -> None:
+                import shutil as _shutil
+                _shutil.copyfile(src, dest)
+                os.chmod(dest, 0o755)
+                _chown_user(dest, username)
+
+            await asyncio.to_thread(_copy)
+            results[key] = {"success": True, "message": dest}
+        except Exception as e:
+            results[key] = {"success": False, "message": str(e)}
+    success = all(v["success"] for v in results.values())
+    summary = ", ".join(f"{SHORTCUT_DEFS[k]['label']}: {'OK' if v['success'] else 'NG'}" for k, v in results.items())
+    return {"success": success, "results": results, "message": summary}
+
+
+# --- 8.5 Webアプリ: Ventoy-UI (https://github.com/hirogura/ventoy-ui.git) ---
+# デスクトップアプリとは異なり、/opt/ventoy-ui に取得して
+# systemd サービス (ventoy-ui) として常駐させ、Tailscale Serve 経由で使う Webアプリ。
+VENTOY_UI_DIR = "/opt/ventoy-ui"
+VENTOY_UI_REPO = "https://github.com/hirogura/ventoy-ui.git"
+VENTOY_UI_PORT = 3363
+VENTOY_UI_SERVICE = "ventoy-ui"
+
+
+async def _tailscale_https_url(port: int) -> str | None:
+    """Tailscale の DNS名から https URL を組み立てる (取得できなければ None)。"""
+    ts = await run_cmd("tailscale status --json 2>/dev/null", timeout=5)
+    try:
+        data = json.loads(ts["stdout"])
+        dns = data.get("Self", {}).get("DNSName", "")
+        if dns:
+            hostname = dns.rstrip(".")
+            return f"https://{hostname}:{port}/"
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+@app.get("/api/ventoyui/status")
+async def ventoyui_status():
+    """Ventoy-UI の導入状態と起動用 URL を返す。"""
+    svc = await run_cmd(f"systemctl is-enabled {VENTOY_UI_SERVICE} 2>/dev/null", timeout=5)
+    dir_check = await run_cmd(f"test -d {shlex.quote(VENTOY_UI_DIR)}", timeout=5)
+    installed = svc["returncode"] == 0 or dir_check["returncode"] == 0
+
+    active = ""
+    if installed:
+        act = await run_cmd(f"systemctl is-active {VENTOY_UI_SERVICE} 2>/dev/null", timeout=5)
+        active = act["stdout"].strip()
+
+    url = await _tailscale_https_url(VENTOY_UI_PORT) if installed else None
+    return {"installed": installed, "active": active, "url": url, "port": VENTOY_UI_PORT}
+
+
+@app.post("/api/ventoyui/install")
+async def ventoyui_install():
+    """Ventoy-UI をインストール/更新する (git clone/pull + systemd登録)。"""
+    logs: list[str] = []
+    w_git = await run_cmd("which git", timeout=5)
+    if w_git["returncode"] != 0:
+        r = await run_cmd(_sudo("apt-get install -y git"), timeout=600)
+        if r["returncode"] != 0:
+            return {"success": False, "message": "git のインストールに失敗しました (Ventoy-UI の取得に必要です)"}
+
+    if os.path.isdir(os.path.join(VENTOY_UI_DIR, ".git")):
+        r = await run_cmd(_sudo(f"git -C {shlex.quote(VENTOY_UI_DIR)} pull --ff-only"), timeout=300)
+        logs.append((r["stdout"] or r["stderr"]).strip())
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"更新に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+    else:
+        r = await run_cmd(_sudo(f"git clone --depth 1 {VENTOY_UI_REPO} {shlex.quote(VENTOY_UI_DIR)}"), timeout=300)
+        logs.append((r["stdout"] or r["stderr"]).strip())
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"ダウンロードに失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+
+    svc_src = os.path.join(VENTOY_UI_DIR, "ventoy-ui.service")
+    steps = [
+        _sudo(f"cp {shlex.quote(svc_src)} /etc/systemd/system/{VENTOY_UI_SERVICE}.service"),
+        _sudo("systemctl daemon-reload"),
+        _sudo(f"systemctl enable --now {VENTOY_UI_SERVICE}"),
+    ]
+    for cmd in steps:
+        r = await run_cmd(cmd, timeout=120)
+        if (r["stdout"] or "").strip():
+            logs.append(r["stdout"].strip()[-1000:])
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"サービス登録に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+
+    # Tailscale Serve で https 公開する (既存の Serve 設定は残したまま追加。失敗しても導入自体は成功扱い)
+    ts = await run_cmd(
+        f"tailscale serve --bg --https={VENTOY_UI_PORT} http://127.0.0.1:{VENTOY_UI_PORT} 2>&1",
+        timeout=30,
+    )
+    tail = (ts["stdout"] or ts["stderr"] or "").strip()[-500:]
+    if tail:
+        logs.append(tail)
+
+    url = await _tailscale_https_url(VENTOY_UI_PORT)
+    msg = "Ventoy-UI をインストールしました。"
+    if url:
+        msg += f" 「起動」ボタンで開けます ({url})"
+    detail = "\n".join(l for l in logs if l).strip()[-2000:]
+    return {"success": True, "message": msg, "url": url, "output": detail}
+
+
+# --- 8.6 ノートPC 蓋閉じでもスリープしない設定 (systemd-logind) ---
+# デスクトップ環境なしでサーバー運用するノートPC向け。
+# /etc/systemd/logind.conf.d/ に drop-in を置き、蓋閉じ時の動作を ignore にする。
+LID_SWITCH_DROPIN = "/etc/systemd/logind.conf.d/99-servui-no-suspend-on-lid.conf"
+LID_SWITCH_CONTENT = (
+    "[Login]\n"
+    "HandleLidSwitch=ignore\n"
+    "HandleLidSwitchExternalPower=ignore\n"
+    "HandleLidSwitchDocked=ignore\n"
+)
+_LID_KEYS = ("HandleLidSwitch", "HandleLidSwitchExternalPower", "HandleLidSwitchDocked")
+
+
+def _parse_lid_value(text: str, key: str) -> str | None:
+    """設定ファイル本文から指定キーの有効値(最後の非コメント行)を返す。"""
+    val: str | None = None
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith(";") or s.startswith("["):
+            continue
+        m = re.match(rf"^{re.escape(key)}\s*=\s*(\S+)", s)
+        if m:
+            # 行末コメント除去
+            val = m.group(1).split("#")[0].split(";")[0].strip() or None
+    return val
+
+
+def _lid_switch_state() -> dict:
+    """現在の蓋閉じ設定を返す。enabled は本機能の drop-in が有効な場合 True。"""
+    values: dict = {}
+    dropin_text = ""
+    try:
+        with open(LID_SWITCH_DROPIN, encoding="utf-8", errors="replace") as f:
+            dropin_text = f.read()
+    except OSError:
+        pass
+    main_text = ""
+    try:
+        with open("/etc/systemd/logind.conf", encoding="utf-8", errors="replace") as f:
+            main_text = f.read()
+    except OSError:
+        pass
+    enabled = all(_parse_lid_value(dropin_text, k) == "ignore" for k in _LID_KEYS)
+    for k in _LID_KEYS:
+        v = _parse_lid_value(dropin_text, k) or _parse_lid_value(main_text, k)
+        values[k] = v or "未設定 (既定: suspend)"
+    if enabled:
+        detail = "有効 (蓋を閉じてもスリープしません)"
+    elif any(_parse_lid_value(dropin_text, k) is not None for k in _LID_KEYS):
+        detail = "一部のみ設定されています (再有効化推奨)"
+    else:
+        detail = "無効 (蓋を閉じるとスリープします)"
+    return {"enabled": enabled, "values": values, "detail": detail}
+
+
+@app.get("/api/system/lid-switch")
+async def lid_switch_status():
+    """蓋閉じスリープ抑止の状態を返す。"""
+    return _lid_switch_state()
+
+
+@app.post("/api/system/lid-switch")
+async def lid_switch_set(req: Request):
+    """蓋閉じスリープ抑止の有効/無効を切り替える。"""
+    data = await _get_json(req)
+    enable = data.get("enable", True)
+    # 文字列 "false"/"0" 等も許容する
+    if isinstance(enable, str):
+        enable = enable.strip().lower() not in ("false", "0", "no", "off", "disable")
+    enable = bool(enable)
+    if enable:
+        cmd = (
+            f"{_sudo('mkdir -p ' + shlex.quote(os.path.dirname(LID_SWITCH_DROPIN)))}"
+            f" && printf %s {shlex.quote(LID_SWITCH_CONTENT)} | {_sudo('tee ' + shlex.quote(LID_SWITCH_DROPIN))} >/dev/null"
+            f" && {_sudo('systemctl restart systemd-logind')}"
+        )
+        r = await run_cmd(cmd, timeout=60)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"設定に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+        return {"success": True,
+                "message": "有効にしました。蓋を閉じてもスリープしません (systemd-logind を再起動済み)。",
+                **_lid_switch_state()}
+    else:
+        cmd = (
+            f"{_sudo('rm -f ' + shlex.quote(LID_SWITCH_DROPIN))}"
+            f" && {_sudo('systemctl restart systemd-logind')}"
+        )
+        r = await run_cmd(cmd, timeout=60)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": f"無効化に失敗しました: {(r['stderr'] or r['stdout']).strip()[:500]}"}
+        return {"success": True,
+                "message": "無効にしました。蓋を閉じると通常通りスリープします。",
+                **_lid_switch_state()}
 
 
 @app.post("/api/servui/restart")
