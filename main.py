@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.9.2")
+app = FastAPI(title="serv-UI", version="2.9.3")
 
 
 @app.middleware("http")
@@ -2751,19 +2751,27 @@ async def apps_shortcuts_create(req: Request):
                 # GNOME (desktop-icons-ng) は metadata::trusted が無いと
                 # 「不許可」オーバーレイ付きアイコンで表示するため、
                 # ユーザー権限で trusted を設定する。
+                # dbus-run-session では独立バスの gvfsd-metadata が呼ばれて
+                # デスクトップに反映されないため、ユーザーの既存セッションバスに直結する。
                 try:
                     pw = pwd.getpwnam(username)
-                    env = f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}"
+                    runtime = f"/run/user/{pw.pw_uid}"
+                    if not os.path.isdir(runtime):
+                        return
+                    env_vars = (
+                        f"XDG_RUNTIME_DIR={runtime}",
+                        f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus",
+                    )
                     if IS_ROOT:
                         subprocess.run(
-                            ["sudo", "-u", username, "env", env,
-                             "dbus-run-session", "--", "gio", "set", dest,
-                             "metadata::trusted", "true"],
+                            ["sudo", "-u", username, "env", *env_vars,
+                             "gio", "set", dest, "metadata::trusted", "true"],
                             capture_output=True, text=True, timeout=60,
                         )
                     else:
                         subprocess.run(
-                            ["env", env, "gio", "set", dest, "metadata::trusted", "true"],
+                            ["env", *env_vars, "gio", "set", dest,
+                             "metadata::trusted", "true"],
                             capture_output=True, text=True, timeout=60,
                         )
                 except Exception:
@@ -2967,6 +2975,149 @@ async def lid_switch_set(req: Request):
         return {"success": True,
                 "message": "無効にしました。蓋を閉じると通常通りスリープします。",
                 **_lid_switch_state()}
+
+
+# --- 8.7 Bing壁紙 (1日1回 Bing の今日の画像で GNOME 壁紙を更新) ---
+# Snap 版 BingWall は動作が重いため、cron + シェルスクリプトで軽量に実現する。
+# リポジトリ同梱の bing-wallpaper.sh を /usr/local/bin へ置き、
+# /etc/cron.d/bing-wallpaper で 1日1回 root として実行する。
+BING_WP_REPO_SCRIPT = str(BASE_DIR / "bing-wallpaper.sh")
+BING_WP_SCRIPT = "/usr/local/bin/bing-wallpaper"
+BING_WP_CRON = "/etc/cron.d/bing-wallpaper"
+BING_WP_CRON_CONTENT = (
+    "# /etc/cron.d/bing-wallpaper -- serv-UI が管理しています (v.2.9.3)\n"
+    "# 1日1回 Bing の今日の画像を取得し GNOME のデスクトップ壁紙に設定します\n"
+    "SHELL=/bin/bash\n"
+    "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n"
+    "30 7 * * * root /usr/local/bin/bing-wallpaper\n"
+)
+
+
+async def _bing_wp_status() -> dict:
+    """Bing壁紙の現在状態を返す。enabled は cron 登録の有無。"""
+    username, home, _shell = get_primary_user()
+    cron_text = ""
+    try:
+        with open(BING_WP_CRON, encoding="utf-8", errors="replace") as f:
+            cron_text = f.read()
+    except OSError:
+        pass
+    enabled = BING_WP_SCRIPT in cron_text
+    script_installed = os.path.isfile(BING_WP_SCRIPT) and os.access(BING_WP_SCRIPT, os.X_OK)
+    if not script_installed and os.path.isfile(BING_WP_REPO_SCRIPT):
+        # 同梱スクリプトがまだ導入されていない場合はこの場で導入する
+        r = await run_cmd(_sudo(f"install -m 0755 '{BING_WP_REPO_SCRIPT}' '{BING_WP_SCRIPT}'"), timeout=30)
+        script_installed = r["returncode"] == 0 and os.path.isfile(BING_WP_SCRIPT)
+
+    img_file = os.path.join(home, ".cache/bing-wallpaper/bing.jpg")
+    info_file = os.path.join(home, ".cache/bing-wallpaper/info.txt")
+    img_exists = os.path.isfile(img_file)
+    img_mtime = ""
+    if img_exists:
+        try:
+            img_mtime = datetime.fromtimestamp(os.path.getmtime(img_file)).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            pass
+    img_title = ""
+    img_copyright = ""
+    if os.path.isfile(info_file):
+        try:
+            with open(info_file, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("title: "):
+                        img_title = line[7:].strip()
+                    elif line.startswith("copyright: "):
+                        img_copyright = line[11:].strip()
+        except OSError:
+            pass
+
+    current_uri = ""
+    pw = None
+    try:
+        pw = pwd.getpwnam(username)
+    except KeyError:
+        pw = None
+    if pw and os.path.isdir(f"/run/user/{pw.pw_uid}"):
+        env = (
+            f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid} "
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{pw.pw_uid}/bus"
+        )
+        r = await run_cmd(
+            f"sudo -u {shlex.quote(username)} env {env} "
+            "gsettings get org.gnome.desktop.background picture-uri 2>/dev/null",
+            timeout=10,
+        )
+        if r["returncode"] == 0:
+            current_uri = r["stdout"].strip().strip("'\"")
+    if not current_uri and img_exists and enabled:
+        current_uri = f"file://{img_file}"
+
+    detail = "有効 (毎日 07:30 に Bing の画像を壁紙に設定)" if enabled else "無効 (cron 未登録)"
+    return {
+        "enabled": enabled,
+        "script_installed": script_installed,
+        "user": username,
+        "target": img_file,
+        "img_exists": img_exists,
+        "img_mtime": img_mtime,
+        "img_title": img_title,
+        "img_copyright": img_copyright,
+        "current_uri": current_uri,
+        "detail": detail,
+        "cron_file": BING_WP_CRON,
+        "script": BING_WP_SCRIPT,
+    }
+
+
+@app.get("/api/apps/bing-wallpaper")
+async def bing_wallpaper_status():
+    """Bing壁紙の状態 (cron 登録・画像ファイル・現行壁紙) を返す。"""
+    return await _bing_wp_status()
+
+
+@app.post("/api/apps/bing-wallpaper")
+async def bing_wallpaper_set(req: Request):
+    """Bing壁紙 cron の有効/無効を切り替える。"""
+    data = await _get_json(req)
+    enable = data.get("enable", True)
+    if not os.path.isfile(BING_WP_REPO_SCRIPT):
+        return {"success": False, "message": "bing-wallpaper.sh がリポジトリに見つかりません", **await _bing_wp_status()}
+    r = await run_cmd(_sudo(f"install -m 0755 '{BING_WP_REPO_SCRIPT}' '{BING_WP_SCRIPT}'"), timeout=30)
+    if r["returncode"] != 0:
+        return {"success": False, "message": "スクリプトの導入に失敗しました: " + (r["stderr"] or r["stdout"]).strip()[:300],
+                **await _bing_wp_status()}
+    if enable:
+        cmd = (f"{_sudo('mkdir -p /etc/cron.d')}"
+               f" && printf %s {shlex.quote(BING_WP_CRON_CONTENT)} | {_sudo('tee ' + shlex.quote(BING_WP_CRON))} >/dev/null")
+        r = await run_cmd(cmd, timeout=30)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": "cron 登録に失敗しました: " + (r["stderr"] or r["stdout"]).strip()[:300],
+                    **await _bing_wp_status()}
+        msg = "有効にしました。毎日 07:30 に Bing の画像を壁紙に設定します。"
+    else:
+        r = await run_cmd(_sudo(f"rm -f {shlex.quote(BING_WP_CRON)}"), timeout=30)
+        if r["returncode"] != 0:
+            return {"success": False,
+                    "message": "cron 削除に失敗しました: " + (r["stderr"] or r["stdout"]).strip()[:300],
+                    **await _bing_wp_status()}
+        msg = "無効にしました。cron を削除しました (追加された壁紙画像はそのまま残ります)。"
+    return {"success": True, "message": msg, **await _bing_wp_status()}
+
+
+@app.post("/api/apps/bing-wallpaper/run")
+async def bing_wallpaper_run():
+    """Bing壁紙スクリプトを今すぐ 1 回実行する。"""
+    username, _home, _shell = get_primary_user()
+    if not username:
+        return {"success": False, "message": "対象ユーザーを特定できませんでした"}
+    r = await run_cmd(BING_WP_SCRIPT, timeout=300)
+    out = (r["stdout"] or "").strip()
+    ok = r["returncode"] == 0 and (out.startswith("ok:") or out.startswith("warn:"))
+    if r["returncode"] != 0 and not out:
+        out = r["stderr"] or "スクリプトの実行に失敗しました"
+    return {"success": ok, "message": out.splitlines()[0] if out else "実行完了",
+            "output": out[-2000:], **await _bing_wp_status()}
 
 
 @app.post("/api/servui/restart")

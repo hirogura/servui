@@ -2648,6 +2648,90 @@ async function loadAppsPage() {
   await loadAppsShortcuts();
   await loadVentoyUI();
   await loadLidSwitch();
+  await loadBingWallpaper();
+}
+
+// --- Bing壁紙 (cron + スクリプト) ---
+async function loadBingWallpaper() {
+  const el = document.getElementById('bing-wall-badge');
+  const detail = document.getElementById('bing-wall-detail');
+  if (!el) return;
+  try {
+    const resp = await fetch('/api/apps/bing-wallpaper');
+    const data = await resp.json();
+    const lines = [];
+    lines.push(data.img_exists
+      ? `壁紙: ${data.img_title || '(タイトル不明)'}${data.img_mtime ? ` / 取得: ${data.img_mtime}` : ''}`
+      : '壁紙: 未取得 (「今すぐ取得」で取得できます)');
+    if (data.current_uri) lines.push(`設定中: ${data.current_uri}`);
+    if (data.img_copyright) lines.push(`© ${data.img_copyright}`);
+    lines.push(`cron: ${data.enabled ? '登録済み (/etc/cron.d/bing-wallpaper)' : '未登録'}`);
+    detail.innerHTML = lines.map(escapeHtml).join('<br>');
+    el.innerHTML = data.enabled
+      ? '<span class="badge badge-active">有効</span>'
+      : '<span class="badge badge-other">無効</span>';
+  } catch (e) {
+    el.innerHTML = '<span class="badge badge-other">状態不明</span>';
+    detail.innerHTML = `状態取得エラー: ${escapeHtml(e.message)}`;
+  }
+}
+
+async function setBingWallpaper(enable) {
+  const el = document.getElementById('bing-wall-badge');
+  const detail = document.getElementById('bing-wall-detail');
+  const statusEl = document.getElementById('bing-wall-status');
+  const btns = ['btn-bing-wall-enable', 'btn-bing-wall-disable', 'btn-bing-wall-run'].map(id => document.getElementById(id)).filter(Boolean);
+  btns.forEach(b => b.disabled = true);
+  el.innerHTML = '<span class="badge badge-other">更新中...</span>';
+  try {
+    const resp = await fetch('/api/apps/bing-wallpaper', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    showStatus(data.message || '更新しました', data.success ? 'success' : 'error');
+    if (detail) detail.textContent = data.detail || '';
+    el.innerHTML = data.enabled
+      ? '<span class="badge badge-active">有効</span>'
+      : '<span class="badge badge-other">無効</span>';
+    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
+    statusEl.textContent = data.message || '';
+    clearTimeout(statusEl._timer);
+    statusEl._timer = setTimeout(() => { statusEl.className = 'status-msg'; }, 6000);
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function runBingWallpaperToday() {
+  const btn = document.getElementById('btn-bing-wall-run');
+  const statusEl = document.getElementById('bing-wall-status');
+  btn.disabled = true;
+  statusEl.className = 'status-msg show info';
+  statusEl.innerHTML = '<span class="spinner"></span> Bing から画像を取得中... (数十秒かかる場合があります)';
+  try {
+    const resp = await fetch('/api/apps/bing-wallpaper/run', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    const out = data.message || '';
+    const type = data.success ? 'success' : 'error';
+    statusEl.className = `status-msg show ${type}`;
+    statusEl.textContent = out;
+    clearTimeout(statusEl._timer);
+    statusEl._timer = setTimeout(() => { statusEl.className = 'status-msg'; }, 8000);
+    showStatus(out, type);
+    loadBingWallpaper();
+  } catch (e) {
+    statusEl.className = 'status-msg show error';
+    statusEl.textContent = `エラー: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // --- アプリのインストール ---
