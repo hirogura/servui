@@ -2640,6 +2640,7 @@ const APPS_INSTALL_DEFS = [
   { key: 'libreoffice', label: 'LibreOffice', desc: 'libreoffice + 日本語 language pack / help' },
   { key: 'vlc', label: 'VLC', desc: 'VLC メディアプレイヤー' },
   { key: 'ssh', label: 'SSH', desc: 'openssh-server を導入し sshd を有効化・起動' },
+  { key: 'bing_wall', label: 'BingWall', desc: 'Bing 壁紙をデスクトップに設定するユーティリティ (Snap)' },
 ];
 
 async function loadAppsPage() {

@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.9.0")
+app = FastAPI(title="serv-UI", version="2.9.1")
 
 
 @app.middleware("http")
@@ -2480,7 +2480,7 @@ async def timeshift_delete(req: Request):
 # ============================================================
 # Cachy-UI (https://github.com/hirogura/cachyos-cachyui.git) を参考に作成。
 # パッケージ操作は Ubuntu/Debian 向けの apt に置き換えている。
-APP_INSTALL_KEYS = ("chrome", "edge", "thunderbird", "libreoffice", "vlc", "ssh")
+APP_INSTALL_KEYS = ("chrome", "edge", "thunderbird", "libreoffice", "vlc", "ssh", "bing_wall")
 
 APP_LABELS: dict[str, str] = {
     "chrome": "Google Chrome",
@@ -2489,10 +2489,14 @@ APP_LABELS: dict[str, str] = {
     "libreoffice": "LibreOffice",
     "vlc": "VLC",
     "ssh": "SSH",
+    "bing_wall": "BingWall",
 }
 
 CHROME_DEB_URL = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-EDGE_DEB_URL = "https://go.microsoft.com/fwlink?linkid=2099617"
+# fwlink (linkid=2099617) は現状 Windows 用の実行ファイルを返すため、
+# 公式 apt リポジトリ経由でインストールする。
+EDGE_GPG_KEY = "https://packages.microsoft.com/keys/microsoft.asc"
+EDGE_REPO_LIST = "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge/ stable main"
 
 
 async def _dpkg_installed_status(package: str) -> dict:
@@ -2535,6 +2539,12 @@ async def _check_app_status() -> dict:
         "installed": q_ssh["installed"] or svc_on,
         "detail": svc_state or q_ssh["detail"],
     }
+
+    q_bw = await run_cmd("snap list bing-wall 2>/dev/null", timeout=10)
+    bw_detail = ""
+    if q_bw["returncode"] == 0 and len(q_bw["stdout"].splitlines()) > 1:
+        bw_detail = q_bw["stdout"].splitlines()[1].split()[1]
+    status["bing_wall"] = {"installed": q_bw["returncode"] == 0, "detail": bw_detail}
     return status
 
 
@@ -2557,10 +2567,15 @@ async def _install_single_app(key: str) -> dict:
         ok = await _step(_sudo("apt-get install -y /tmp/google-chrome-stable.deb"), timeout=1800)
         return {"success": ok, "output": "\n".join(logs)[-3000:]}
     elif key == "edge":
-        if not await _step(f"curl -fsSL '{EDGE_DEB_URL}' -o /tmp/microsoft-edge-stable.deb", timeout=300):
+        if not await _step(f"curl -fsSL {EDGE_GPG_KEY} | gpg --dearmor --yes -o /tmp/microsoft-edge.gpg", timeout=300):
             return {"success": False, "output": "\n".join(logs)[-3000:]}
-        ok = await _step(_sudo("apt-get install -y /tmp/microsoft-edge-stable.deb"), timeout=1800)
-        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+        if not await _step(_sudo("install -m 0644 /tmp/microsoft-edge.gpg /usr/share/keyrings/microsoft-edge.gpg")):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        if not await _step(_sudo(f"echo '{EDGE_REPO_LIST}' > /etc/apt/sources.list.d/microsoft-edge.list")):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        if not await _step(_sudo("apt-get update && apt-get install -y microsoft-edge-stable"), timeout=1800):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        return {"success": True, "output": "\n".join(logs)[-3000:]}
     elif key == "thunderbird":
         ok = await _step(_sudo("apt-get install -y thunderbird thunderbird-locale-ja"), timeout=1800)
         return {"success": ok, "output": "\n".join(logs)[-3000:]}
@@ -2574,6 +2589,11 @@ async def _install_single_app(key: str) -> dict:
         if not await _step(_sudo("apt-get install -y openssh-server"), timeout=1800):
             return {"success": False, "output": "\n".join(logs)[-3000:]}
         ok = await _step(_sudo("systemctl enable --now ssh"), timeout=120)
+        return {"success": ok, "output": "\n".join(logs)[-3000:]}
+    elif key == "bing_wall":
+        if not await _step(f"which snap >/dev/null 2>&1 || {_sudo('apt-get install -y snapd')}", timeout=900):
+            return {"success": False, "output": "\n".join(logs)[-3000:]}
+        ok = await _step(_sudo("snap install bing-wall"), timeout=900)
         return {"success": ok, "output": "\n".join(logs)[-3000:]}
     return {"success": False, "output": "不明なアプリ指定です"}
 
@@ -2725,7 +2745,30 @@ async def apps_shortcuts_create(req: Request):
                 os.chmod(dest, 0o755)
                 _chown_user(dest, username)
 
+            def _mark_trusted() -> None:
+                # GNOME (desktop-icons-ng) は metadata::trusted が無いと
+                # 「不許可」オーバーレイ付きアイコンで表示するため、
+                # ユーザー権限で trusted を設定する。
+                try:
+                    pw = pwd.getpwnam(username)
+                    env = f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}"
+                    if IS_ROOT:
+                        subprocess.run(
+                            ["sudo", "-u", username, "env", env,
+                             "dbus-run-session", "--", "gio", "set", dest,
+                             "metadata::trusted", "true"],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                    else:
+                        subprocess.run(
+                            ["env", env, "gio", "set", dest, "metadata::trusted", "true"],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                except Exception:
+                    pass
+
             await asyncio.to_thread(_copy)
+            await asyncio.to_thread(_mark_trusted)
             results[key] = {"success": True, "message": dest}
         except Exception as e:
             results[key] = {"success": False, "message": str(e)}
