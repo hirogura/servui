@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.7.1")
+app = FastAPI(title="serv-UI", version="2.7.2")
 
 
 @app.middleware("http")
@@ -2152,6 +2152,10 @@ async def timeshift_snapshots():
                 "description": m.group(4).strip(),
                 "size": _get_timeshift_snapshot_size(s_name),
             })
+
+    # Snapshot names are "YYYY-MM-DD_HH-MM-SS", so descending name order is
+    # newest first.
+    snapshots.sort(key=lambda s: s["name"], reverse=True)
 
     # Read the currently configured exclude list from the Timeshift config.
     excludes: list[str] = []
