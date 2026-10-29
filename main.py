@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.6.0")
+app = FastAPI(title="serv-UI", version="2.6.1")
 
 
 @app.middleware("http")
@@ -3196,12 +3196,9 @@ async def ubuntu_versions():
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"releases.ubuntu.comへの接続に失敗しました: {e}")
     versions = []
-    for m in re.finditer(r'<a\s+href="(\d+\.\d+(?:\.\d+)?)/"[^>]*>\d+\.\d+(?:\.\d+)?/</a>.*?Ubuntu\s+([\d.]+(?:\s+LTS)?)\s*\(([^)]+)\)', html):
+    for m in re.finditer(r'<a\s+href="(\d+(?:\.\d+){1,3})/">', html):
         folder = m.group(1)
-        label = m.group(2).strip()
-        codename = (m.group(3) or "").strip()
-        display = f"Ubuntu {label}" + (f" ({codename})" if codename else "")
-        versions.append({"name": folder, "display": display})
+        versions.append({"name": folder, "display": f"Ubuntu {folder}"})
     seen = set()
     unique = []
     for v in versions:
@@ -3218,7 +3215,7 @@ async def ubuntu_versions():
 @app.get("/api/grub/ubuntu-files")
 async def ubuntu_files(version: str):
     """List ISO files for a given Ubuntu release version."""
-    if not re.match(r"^\d+\.\d+(?:\.\d+)?$", version):
+    if not re.match(r"^\d+(?:\.\d+){1,3}$", version):
         raise HTTPException(status_code=400, detail="不正なバージョン指定です")
     url = f"{_UBUNTU_RELEASES_BASE}/{version}/"
     try:
