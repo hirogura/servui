@@ -2586,7 +2586,7 @@ async function createSnapshot() {
 }
 
 async function restoreSnapshot(id, name) {
-  if (!confirm(`スナップショット ${id} (${name}) を復元しますか？\n\n⚠️ 現在のシステムは選択したスナップショットの状態に戻ります\n⚠️ 実行すると自動的に再起動します`)) return;
+  if (!confirm(`スナップショット ${id} (${name}) を復元しますか？\n\n⚠️ 現在のシステムは選択したスナップショットの状態に戻ります\n⚠️ 実行したあとは再起動してください`)) return;
   try {
     const resp = await fetch('/api/timeshift/restore', {
       method: 'POST',
