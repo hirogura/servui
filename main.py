@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.7.2")
+app = FastAPI(title="serv-UI", version="2.8.0")
 
 
 @app.middleware("http")
@@ -2133,6 +2133,76 @@ def _default_ts_excludes() -> list[str]:
     return default_excludes
 
 
+_TS_SCHEDULE_TYPES = ("monthly", "weekly", "daily", "hourly", "boot")
+_TS_DEFAULT_COUNTS = {"monthly": 2, "weekly": 3, "daily": 5, "hourly": 6, "boot": 5}
+
+
+def _cfg_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return default
+
+
+def _read_ts_schedule(cfg: dict) -> dict:
+    """Build the schedule view of a Timeshift config dict."""
+    schedule: dict = {
+        "stop_cron_emails": _cfg_bool(cfg.get("stop_cron_emails"), True),
+    }
+    for t in _TS_SCHEDULE_TYPES:
+        raw = cfg.get(f"count_{t}", _TS_DEFAULT_COUNTS[t])
+        try:
+            keep = int(raw)
+        except (TypeError, ValueError):
+            keep = _TS_DEFAULT_COUNTS[t]
+        schedule[t] = {
+            "enabled": _cfg_bool(cfg.get(f"schedule_{t}"), False),
+            "keep": keep,
+        }
+    return schedule
+
+
+def _ts_cron_content(line: str, stop_emails: bool) -> str:
+    sh = "SHELL=/bin/bash\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n"
+    if stop_emails:
+        sh += 'MAILTO=""\n'
+    return sh + "\n" + line + "\n"
+
+
+def _sync_ts_cron(schedule: dict) -> None:
+    """Sync /etc/cron.d/timeshift-* files with the configured schedule."""
+    scheduled = any(schedule[t]["enabled"] for t in _TS_SCHEDULE_TYPES)
+    stop = bool(schedule.get("stop_cron_emails", True))
+    hourly_path = "/etc/cron.d/timeshift-hourly"
+    boot_path = "/etc/cron.d/timeshift-boot"
+
+    def write_cron(path: str, line: str) -> None:
+        if _write_file_root_safe(path, _ts_cron_content(line, stop)):
+            subprocess.run(
+                _sudo(f"chown root:root '{path}' && chmod 644 '{path}'"),
+                shell=True, capture_output=True, timeout=15,
+            )
+
+    def remove_cron(path: str) -> None:
+        try:
+            os.remove(path)
+            return
+        except OSError:
+            pass
+        subprocess.run(_sudo(f"rm -f '{path}'"), shell=True, capture_output=True, timeout=15)
+
+    if scheduled:
+        write_cron(hourly_path, "0 * * * * root timeshift --check --scripted")
+    else:
+        remove_cron(hourly_path)
+
+    if schedule.get("boot", {}).get("enabled"):
+        write_cron(boot_path, "@reboot root sleep 10m && timeshift --create --scripted --tags B")
+    else:
+        remove_cron(boot_path)
+
+
 @app.get("/api/timeshift/snapshots")
 async def timeshift_snapshots():
     """List existing Timeshift snapshots."""
@@ -2190,7 +2260,43 @@ async def timeshift_snapshots():
     if servui_excludes is not None:
         excludes = servui_excludes
 
-    return {"snapshots": snapshots, "excludes": excludes}
+    return {"snapshots": snapshots, "excludes": excludes, "schedule": _read_ts_schedule(cfg)}
+
+
+@app.post("/api/timeshift/schedule")
+async def timeshift_save_schedule(req: Request):
+    """Save the snapshot schedule to /etc/timeshift/timeshift.json and sync cron."""
+    data = await _get_json(req)
+    sched = data.get("schedule")
+    stop_emails = data.get("stop_cron_emails")
+
+    cfg_path = "/etc/timeshift/timeshift.json"
+    cfg: dict = {}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    if isinstance(sched, dict):
+        for t in _TS_SCHEDULE_TYPES:
+            item = sched.get(t)
+            if not isinstance(item, dict):
+                continue
+            cfg[f"schedule_{t}"] = "true" if bool(item.get("enabled")) else "false"
+            keep = item.get("keep")
+            if isinstance(keep, (int, float)) and 0 < keep <= 999:
+                cfg[f"count_{t}"] = int(keep)
+    if stop_emails is not None:
+        cfg["stop_cron_emails"] = "true" if bool(stop_emails) else "false"
+
+    schedule = _read_ts_schedule(cfg)
+    if not _write_file_root_safe(cfg_path, json.dumps(cfg, indent=2)):
+        return {"success": False, "message": "設定ファイルの書き出しに失敗しました（権限を確認してください）"}
+
+    _sync_ts_cron(schedule)
+
+    return {"success": True, "message": "スケジュールを保存しました", "schedule": schedule}
 
 
 @app.post("/api/timeshift/excludes")

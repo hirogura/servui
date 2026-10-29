@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.2.7.2</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.2.8.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -527,7 +527,7 @@
       <div class="stat-card">
         <ul class="backup-notes">
           <li><strong>rsync モード</strong>と <strong>btrfs モード</strong>の両方に対応しています。</li>
-          <li>スナップショットは手動でのみ作成します（スケジュール機能は無効です）。</li>
+          <li>スケジュールを設定すると Cron によりスナップショットが自動作成されます（既定は手動作成のみ）。</li>
           <li>スナップショットの復元は、再起動後に実行されます。</li>
         </ul>
         <div id="timeshift-env-status" class="backup-env-status"><span class="spinner"></span> 状態を確認中...</div>
@@ -609,6 +609,24 @@
         </div>
         <div id="timeshift-snapshot-list">
           <p class="muted">読み込み中...</p>
+        </div>
+      </div>
+
+      <h2>スケジュール</h2>
+      <div class="stat-card">
+        <p class="muted" style="margin-bottom:0.75rem;">スナップショットの頻度を選択</p>
+        <div id="timeshift-schedule-rows" style="display:flex;flex-direction:column;gap:0.4rem;max-width:420px;">
+          <p class="muted">読み込み中...</p>
+        </div>
+        <label style="display:flex;align-items:center;gap:0.45rem;margin:0.75rem 0 0;cursor:pointer;font-size:0.9rem;">
+          <input type="checkbox" id="ts-cron-no-email" onchange="markTimeshiftScheduleDirty()">
+          cron に定期タスクのメールを送信しない
+        </label>
+        <div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">
+          <button class="btn btn-primary" id="btn-timeshift-save-schedule" onclick="saveTimeshiftSchedule()" disabled>
+            スケジュールを保存
+          </button>
+          <span class="muted" id="timeshift-schedule-note" style="font-size:0.75rem;"></span>
         </div>
       </div>
     </section>

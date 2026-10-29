@@ -2237,6 +2237,11 @@ let timeshiftExcludes = [];
 let timeshiftExcludesDirty = false;
 let tsExcludeLoadSeq = 0;
 let timeshiftMode = 'rsync';
+let timeshiftSchedule = null;
+let timeshiftScheduleDirty = false;
+
+const TS_SCHEDULE_TYPES = ['monthly', 'weekly', 'daily', 'hourly', 'boot'];
+const TS_SCHEDULE_LABELS = { monthly: '毎月', weekly: '毎週', daily: '毎日', hourly: '毎時', boot: '起動後' };
 
 function applyTimeshiftModeUi() {
   const rsyncEl = document.getElementById('ts-mode-rsync');
@@ -2300,6 +2305,7 @@ async function loadTimeshiftStatus() {
   const createBtn = document.getElementById('btn-timeshift-create');
   const saveBtn = document.getElementById('btn-timeshift-save-excludes');
   const refreshBtn = document.getElementById('btn-timeshift-refresh');
+  const scheduleBtn = document.getElementById('btn-timeshift-save-schedule');
   try {
     const resp = await fetch('/api/timeshift/status');
     timeshiftStatusData = await resp.json();
@@ -2310,6 +2316,7 @@ async function loadTimeshiftStatus() {
       createBtn.disabled = false;
       saveBtn.disabled = false;
       refreshBtn.disabled = false;
+      if (scheduleBtn) scheduleBtn.disabled = false;
     } else {
       envEl.innerHTML = `<span class="text-danger">未インストール</span>`;
       installBtn.disabled = false;
@@ -2317,6 +2324,7 @@ async function loadTimeshiftStatus() {
       createBtn.disabled = true;
       saveBtn.disabled = true;
       refreshBtn.disabled = true;
+      if (scheduleBtn) scheduleBtn.disabled = true;
     }
     applyTimeshiftModeUi();
   } catch (e) {
@@ -2412,6 +2420,100 @@ async function saveTimeshiftExcludes() {
   }
 }
 
+function renderTimeshiftSchedule() {
+  const container = document.getElementById('timeshift-schedule-rows');
+  const emailEl = document.getElementById('ts-cron-no-email');
+  if (!container || !timeshiftSchedule) return;
+  let html = '';
+  for (const t of TS_SCHEDULE_TYPES) {
+    const s = timeshiftSchedule[t];
+    html += `
+      <div style="display:flex;align-items:center;gap:0.75rem;">
+        <label style="display:flex;align-items:center;gap:0.45rem;margin:0;width:6rem;cursor:pointer;font-size:0.9rem;">
+          <input type="checkbox" id="ts-sched-${t}" ${s.enabled ? 'checked' : ''} onchange="onTimeshiftScheduleToggle('${t}')">
+          ${TS_SCHEDULE_LABELS[t]}
+        </label>
+        <span style="font-size:0.9rem;">保持数</span>
+        <span id="ts-keep-${t}" style="min-width:2.5rem;text-align:center;font-family:monospace;font-size:0.9rem;">${s.keep}</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="changeTimeshiftKeep('${t}', -1)" style="padding:0.1rem 0.55rem;">－</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="changeTimeshiftKeep('${t}', 1)" style="padding:0.1rem 0.55rem;">＋</button>
+      </div>`;
+  }
+  container.innerHTML = html;
+  if (emailEl) emailEl.checked = !!timeshiftSchedule.stop_cron_emails;
+  timeshiftScheduleDirty = false;
+  updateTimeshiftScheduleNote();
+}
+
+function onTimeshiftScheduleToggle(type) {
+  const el = document.getElementById(`ts-sched-${type}`);
+  if (timeshiftSchedule && el) timeshiftSchedule[type].enabled = el.checked;
+  markTimeshiftScheduleDirty();
+}
+
+function changeTimeshiftKeep(type, delta) {
+  if (!timeshiftSchedule) return;
+  const s = timeshiftSchedule[type];
+  s.keep = Math.min(99, Math.max(1, s.keep + delta));
+  const el = document.getElementById(`ts-keep-${type}`);
+  if (el) el.textContent = s.keep;
+  markTimeshiftScheduleDirty();
+}
+
+function markTimeshiftScheduleDirty() {
+  timeshiftScheduleDirty = true;
+  updateTimeshiftScheduleNote();
+}
+
+function updateTimeshiftScheduleNote() {
+  const note = document.getElementById('timeshift-schedule-note');
+  if (note) note.textContent = timeshiftScheduleDirty ? '未保存の変更があります' : '';
+}
+
+async function saveTimeshiftSchedule() {
+  const btn = document.getElementById('btn-timeshift-save-schedule');
+  if (!timeshiftSchedule) return;
+  const emailEl = document.getElementById('ts-cron-no-email');
+  const payload = {
+    schedule: TS_SCHEDULE_TYPES.reduce((acc, t) => {
+      acc[t] = { enabled: !!timeshiftSchedule[t].enabled, keep: timeshiftSchedule[t].keep };
+      return acc;
+    }, {}),
+    stop_cron_emails: emailEl ? emailEl.checked : true,
+  };
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/timeshift/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (data.schedule) {
+        timeshiftSchedule = {
+          stop_cron_emails: !!data.schedule.stop_cron_emails,
+          ...timeshiftSchedule,
+          ...TS_SCHEDULE_TYPES.reduce((acc, t) => {
+            acc[t] = data.schedule[t] || timeshiftSchedule[t];
+            return acc;
+          }, {}),
+        };
+      }
+      showTimeshiftStatus(data.message || 'スケジュールを保存しました', 'success');
+      renderTimeshiftSchedule();
+    } else {
+      showTimeshiftStatus(data.message || 'スケジュールの保存に失敗しました', 'error');
+      markTimeshiftScheduleDirty();
+    }
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+    markTimeshiftScheduleDirty();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadTimeshiftSnapshots() {
   const seq = ++tsExcludeLoadSeq;
   const listEl = document.getElementById('timeshift-snapshot-list');
@@ -2424,6 +2526,18 @@ async function loadTimeshiftSnapshots() {
     if (data.excludes && !timeshiftExcludesDirty) {
       timeshiftExcludes = [...data.excludes];
       renderTimeshiftExcludes();
+    }
+    if (data.schedule) {
+      if (!timeshiftSchedule || !timeshiftScheduleDirty) {
+        timeshiftSchedule = {
+          stop_cron_emails: !!data.schedule.stop_cron_emails,
+          ...TS_SCHEDULE_TYPES.reduce((acc, t) => {
+            acc[t] = { enabled: !!(data.schedule[t] && data.schedule[t].enabled), keep: Number(data.schedule[t]?.keep) || 0 };
+            return acc;
+          }, {}),
+        };
+        renderTimeshiftSchedule();
+      }
     }
     if (snaps.length === 0) {
       listEl.innerHTML = '<p class="muted">スナップショットはありません。</p>';
