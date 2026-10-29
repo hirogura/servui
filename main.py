@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.9.1")
+app = FastAPI(title="serv-UI", version="2.9.2")
 
 
 @app.middleware("http")
@@ -2366,7 +2366,7 @@ async def timeshift_create(req: Request):
 
     # Detect root device for config and stdin fallback.
     r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
-    root_dev = r["stdout"].strip() if r["returncode"] == 0 else ""
+    root_dev = _plain_block_dev(r["stdout"]) if r["returncode"] == 0 else ""
     r_uuid = await run_cmd("findmnt -n -o UUID /", timeout=5)
     root_uuid = r_uuid["stdout"].strip() if r_uuid["returncode"] == 0 else ""
 
@@ -2437,7 +2437,9 @@ async def timeshift_restore(req: Request):
     root_dev = ""
     r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
     if r["returncode"] == 0 and r["stdout"].strip():
-        root_dev = r["stdout"].strip()
+        # findmnt appends the btrfs subvolume (e.g. "/dev/vda3[/@]") and
+        # timeshift rejects it with "E: Device not found", so strip it.
+        root_dev = _plain_block_dev(r["stdout"])
 
     target_arg = f" --target '{root_dev}'" if root_dev else ""
     cmd = f"sudo timeshift --restore --snapshot '{target['name']}'{target_arg} --skip-grub --scripted --yes"
