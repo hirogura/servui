@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.6.1")
+app = FastAPI(title="serv-UI", version="2.7.0")
 
 
 @app.middleware("http")
@@ -1935,9 +1935,13 @@ async def backup_run(req: Request):
 
 @app.get("/api/timeshift/status")
 async def timeshift_status():
-    """Check whether Timeshift is installed and detect its mode (rsync/btrfs)."""
+    """Check Timeshift install state, its mode (rsync/btrfs) and btrfs usability."""
     r = await run_cmd("which timeshift 2>/dev/null", timeout=5)
     installed = r["returncode"] == 0
+
+    btrfs_available = False
+    fs_r = await run_cmd("findmnt -n -o FSTYPE /", timeout=5)
+    btrfs_available = fs_r["stdout"].strip().lower() == "btrfs"
 
     mode = None
     if installed:
@@ -1948,7 +1952,55 @@ async def timeshift_status():
         elif "rsync" in txt:
             mode = "rsync"
 
-    return {"installed": installed, "mode": mode}
+    configured_mode = None
+    try:
+        with open("/etc/timeshift/timeshift.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        configured_mode = "btrfs" if cfg.get("btrfs_mode") == "true" else "rsync"
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return {
+        "installed": installed,
+        "mode": mode,
+        "configured_mode": configured_mode,
+        "btrfs_available": btrfs_available,
+    }
+
+
+@app.post("/api/timeshift/mode")
+async def timeshift_set_mode(req: Request):
+    """Persist the snapshot mode (rsync/btrfs) in /etc/timeshift/timeshift.json."""
+    data = await _get_json(req)
+    mode = (data.get("mode") or "").strip()
+    if mode not in ("rsync", "btrfs"):
+        return {"success": False, "message": "不正な形式が指定されました"}
+
+    if mode == "btrfs":
+        fs_r = await run_cmd("findmnt -n -o FSTYPE /", timeout=5)
+        if fs_r["stdout"].strip().lower() != "btrfs":
+            return {"success": False, "message": "ルートファイルシステムが btrfs ではないため btrfs モードは選択できません"}
+
+    cfg_path = "/etc/timeshift/timeshift.json"
+    cfg: dict = {}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    cfg["btrfs_mode"] = "true" if mode == "btrfs" else "false"
+    cfg.setdefault("do_first_run", "false")
+    cfg.setdefault("exclude", [])
+    cfg.setdefault("exclude-apps", [])
+    for k in ("schedule_monthly", "schedule_weekly", "schedule_daily", "schedule_hourly", "schedule_boot"):
+        cfg.setdefault(k, "false")
+    for k in ("count_monthly", "count_weekly", "count_daily", "count_hourly", "count_boot"):
+        cfg.setdefault(k, "2" if k == "count_monthly" else "5")
+
+    if not _write_file_root_safe(cfg_path, json.dumps(cfg, indent=2)):
+        return {"success": False, "message": "設定ファイルの書き出しに失敗しました（権限を確認してください）"}
+    return {"success": True, "mode": mode}
 
 
 @app.post("/api/timeshift/install")

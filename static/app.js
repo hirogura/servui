@@ -2236,6 +2236,57 @@ let timeshiftStatusData = null;
 let timeshiftExcludes = [];
 let timeshiftExcludesDirty = false;
 let tsExcludeLoadSeq = 0;
+let timeshiftMode = 'rsync';
+
+function applyTimeshiftModeUi() {
+  const rsyncEl = document.getElementById('ts-mode-rsync');
+  const btrfsEl = document.getElementById('ts-mode-btrfs');
+  const noteEl = document.getElementById('ts-mode-note');
+  if (!rsyncEl || !btrfsEl) return;
+  const installed = !!(timeshiftStatusData && timeshiftStatusData.installed);
+  const btrfsOk = !!(timeshiftStatusData && timeshiftStatusData.btrfs_available);
+  rsyncEl.disabled = !installed;
+  btrfsEl.disabled = !installed || !btrfsOk;
+  if (timeshiftStatusData && timeshiftStatusData.configured_mode === 'btrfs' && btrfsOk) {
+    timeshiftMode = 'btrfs';
+  } else {
+    timeshiftMode = 'rsync';
+  }
+  rsyncEl.checked = timeshiftMode === 'rsync';
+  btrfsEl.checked = timeshiftMode === 'btrfs';
+  if (noteEl) {
+    noteEl.textContent = installed
+      ? (btrfsOk ? '' : '※ ルートファイルシステムが btrfs ではないため btrfs モードは使用できません')
+      : '';
+  }
+}
+
+async function setTimeshiftMode(mode) {
+  const prev = timeshiftMode;
+  const rsyncEl = document.getElementById('ts-mode-rsync');
+  const btrfsEl = document.getElementById('ts-mode-btrfs');
+  try {
+    const resp = await fetch('/api/timeshift/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      showTimeshiftStatus(data.message || 'スナップショット形式の変更に失敗しました', 'error');
+      if (rsyncEl) rsyncEl.checked = prev === 'rsync';
+      if (btrfsEl) btrfsEl.checked = prev === 'btrfs';
+      return;
+    }
+    timeshiftMode = mode;
+    if (timeshiftStatusData) timeshiftStatusData.configured_mode = mode;
+    showTimeshiftStatus(`スナップショット形式を ${mode} に設定しました`, 'success');
+  } catch (e) {
+    showTimeshiftStatus(`エラー: ${e.message}`, 'error');
+    if (rsyncEl) rsyncEl.checked = prev === 'rsync';
+    if (btrfsEl) btrfsEl.checked = prev === 'btrfs';
+  }
+}
 
 async function loadTimeshiftPage() {
   loadTimeshiftStatus();
@@ -2267,6 +2318,7 @@ async function loadTimeshiftStatus() {
       saveBtn.disabled = true;
       refreshBtn.disabled = true;
     }
+    applyTimeshiftModeUi();
   } catch (e) {
     envEl.innerHTML = `<span class="text-danger">状態の取得に失敗しました: ${escapeHtml(e.message)}</span>`;
   }
