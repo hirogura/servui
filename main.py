@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.7.0")
+app = FastAPI(title="serv-UI", version="2.7.1")
 
 
 @app.middleware("http")
@@ -1520,6 +1520,15 @@ async def _find_clonezilla_iso() -> str | None:
     return str(matches[-1]) if matches else None
 
 
+def _plain_block_dev(src: str) -> str:
+    """Strip the btrfs subvolume suffix findmnt appends to SOURCE.
+
+    e.g. "/dev/vda3[/@]" -> "/dev/vda3". ocs-sr only accepts plain block
+    device names and skips inputs like "vda3[/@]" as non-existent devices.
+    """
+    return re.sub(r"\[[^]]*\]$", "", (src or "").strip())
+
+
 async def _system_target_parts() -> list[str]:
     """Partitions to save/restore: EFI, /boot (if separate), root — in that order.
 
@@ -1530,16 +1539,18 @@ async def _system_target_parts() -> list[str]:
     if r["returncode"] == 0:
         fields = r["stdout"].split()
         if len(fields) == 2 and fields[1] == "vfat":
-            parts.append(fields[0])
+            parts.append(_plain_block_dev(fields[0]))
     b = await run_cmd("findmnt -n -o SOURCE /boot", timeout=5)
     if b["returncode"] == 0 and b["stdout"].strip():
-        boot = b["stdout"].strip()
+        boot = _plain_block_dev(b["stdout"].strip())
         r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
-        if boot != r["stdout"].strip():
+        if boot != _plain_block_dev(r["stdout"].strip()):
             parts.append(boot)
     r = await run_cmd("findmnt -n -o SOURCE /", timeout=5)
     if r["returncode"] == 0 and r["stdout"].strip():
-        parts.append(r["stdout"].strip())
+        dev = _plain_block_dev(r["stdout"].strip())
+        if dev not in parts:
+            parts.append(dev)
     return parts
 
 
