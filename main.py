@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.9.5")
+app = FastAPI(title="serv-UI", version="2.9.6")
 
 
 @app.middleware("http")
@@ -2632,7 +2632,7 @@ async def apps_install(req: Request):
 SHORTCUT_DEFS: dict[str, dict] = {
     "google-chrome": {"label": "Google Chrome", "candidates": ["google-chrome.desktop"]},
     "microsoft-edge": {"label": "Microsoft Edge", "candidates": ["microsoft-edge.desktop", "microsoft-edge-stable.desktop", "com.microsoft.Edge.desktop"]},
-    "thunderbird": {"label": "Thunderbird", "candidates": ["thunderbird.desktop", "org.mozilla.Thunderbird.desktop"]},
+    "thunderbird": {"label": "Thunderbird", "candidates": ["thunderbird.desktop", "org.mozilla.Thunderbird.desktop", "thunderbird_thunderbird.desktop"]},
     "libreoffice-calc": {"label": "LibreOffice Calc", "candidates": ["libreoffice-calc.desktop", "org.libreoffice.calc.desktop"]},
     "libreoffice-writer": {"label": "LibreOffice Writer", "candidates": ["libreoffice-writer.desktop", "org.libreoffice.writer.desktop"]},
     "libreoffice-impress": {"label": "LibreOffice Impress", "candidates": ["libreoffice-impress.desktop", "org.libreoffice.impress.desktop"]},
@@ -2673,17 +2673,43 @@ def _get_desktop_dir(username: str, home: str) -> str:
     return dest
 
 
+def _is_nodisplay_desktop(path: str) -> bool:
+    """NoDisplay=true の .desktop か判定する (transitional パッケージ等)。
+
+    NoDisplay=true の .desktop はデスクトップに置いても
+    アプリメニューに表示されない実体 (Icon= が解決しない名前の
+    場合がありアイコン無し表示になる) のため、ショートカットの
+    コピー元としては避ける。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fp:
+            head = fp.read(4096)
+    except OSError:
+        return False
+    return re.search(r"^NoDisplay=true\s*$", head, flags=re.MULTILINE) is not None
+
+
 def _find_desktop_source(candidates: list[str], home: str) -> str | None:
-    """XDG 標準ディレクトリから .desktop ファイルを探す。"""
-    for d in SHORTCUT_APPDIRS:
-        base = os.path.join(home, d) if d.startswith(".") else d
-        if not os.path.isdir(base):
-            continue
-        for f in candidates:
+    """XDG 標準ディレクトリから .desktop ファイルを探す。
+
+    候補ファイル名を優先して全ディレクトリを検索する。
+    全候補が NoDisplay=true の場合は最初に見つかったものを返す。
+    """
+    fallback: str | None = None
+    for f in candidates:
+        for d in SHORTCUT_APPDIRS:
+            base = os.path.join(home, d) if d.startswith(".") else d
+            if not os.path.isdir(base):
+                continue
             full = os.path.join(base, f)
-            if os.path.isfile(full):
-                return full
-    return None
+            if not os.path.isfile(full):
+                continue
+            if _is_nodisplay_desktop(full):
+                if fallback is None:
+                    fallback = full
+                continue
+            return full
+    return fallback
 
 
 def _chown_user(path: str, username: str) -> None:
