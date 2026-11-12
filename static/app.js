@@ -578,6 +578,30 @@ async function fixPackages() {
   }
 }
 
+async function unlockPackageLocks() {
+  if (!confirm('apt/dpkg のロックファイルを削除してロックを解除しますか？\n\n削除後に dpkg --configure -a を実行します。')) return;
+
+  const status = document.getElementById('package-status');
+  status.className = 'status-msg show info';
+  status.innerHTML = '<span class="spinner"></span> ロックを解除中...';
+
+  try {
+    const resp = await fetch('/api/packages/unlock', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      status.className = 'status-msg show success';
+      status.textContent = 'ロックを解除しました。';
+    } else {
+      status.className = 'status-msg show error';
+      const cleanErr = sanitizeAptError(data.errors);
+      status.textContent = cleanErr ? `ロック解除に失敗しました: ${cleanErr}` : 'ロック解除に失敗しました。';
+    }
+  } catch (e) {
+    status.className = 'status-msg show error';
+    status.textContent = `エラー: ${e.message}`;
+  }
+}
+
 async function forceUpgradeAll() {
   if (!confirm('Phased Updates も含めて全パッケージを強制更新しますか？')) return;
 

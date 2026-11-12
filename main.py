@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="2.9.6")
+app = FastAPI(title="serv-UI", version="3.0.0")
 
 
 @app.middleware("http")
@@ -663,6 +663,23 @@ async def fix_packages():
         timeout=300,
     )
     success = (r2["returncode"] == 0) and (r1["returncode"] == 0)
+    return {
+        "success": success,
+        "output": (r1["stdout"] + "\n" + r2["stdout"]).strip(),
+        "errors": (r1["stderr"] + "\n" + r2["stderr"]).strip(),
+    }
+
+
+@app.post("/api/packages/unlock")
+async def unlock_package_locks():
+    """Remove stale apt/dpkg lock files and reconfigure pending packages."""
+    r1 = await run_cmd(
+        _sudo("rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock "
+        "/var/cache/apt/archives/lock"),
+        timeout=30,
+    )
+    r2 = await run_cmd(_sudo("dpkg --configure -a"), timeout=120)
+    success = (r1["returncode"] == 0) and (r2["returncode"] == 0)
     return {
         "success": success,
         "output": (r1["stdout"] + "\n" + r2["stdout"]).strip(),
