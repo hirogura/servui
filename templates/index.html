@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.3.0.0</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.3.1.0</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -242,10 +242,16 @@
     <section id="tab-terminal" class="tab-content">
       <div class="terminal-header">
         <h1>ターミナル<span id="terminal-cwd-label" class="muted" style="font-size:0.8rem;margin-left:0.75rem;font-weight:400;"></span></h1>
-        <button class="btn btn-secondary" onclick="connectTerminal()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-          接続
-        </button>
+        <div class="btn-group">
+          <button class="btn btn-secondary" onclick="restartTerminalSession()" title="現在のセッションを終了して新しいシェルを開始します">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            新規セッション
+          </button>
+          <button class="btn btn-secondary" onclick="connectTerminal()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            <span id="terminal-connect-text">接続</span>
+          </button>
+        </div>
       </div>
       <div id="terminal-container"></div>
     </section>

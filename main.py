@@ -25,6 +25,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="3.0.0")
+app = FastAPI(title="serv-UI", version="3.1.0")
 
 
 @app.middleware("http")
@@ -769,16 +770,168 @@ def _sanitize_cwd(cwd: str) -> str:
     return cwd
 
 
-@app.websocket("/ws/terminal")
-async def websocket_terminal(websocket: WebSocket, cwd: str = ""):
-    """WebSocket-based terminal using PTY for clean terminal emulation.
-    Uses setpriv when running as root (like selfcode), falls back to sudo+su.
-    Optional `cwd` query param starts the shell in that directory."""
-    await websocket.accept()
+_TERM_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_TERM_BUFFER_LIMIT = 512 * 1024  # replay buffer kept per detached session
+_TERM_DEFAULT_COLS = 120
+_TERM_DEFAULT_ROWS = 30
 
+# session_id -> _TerminalSession. Sessions live independently of WebSockets so
+# the shell keeps running after the browser (or tab) disconnects.
+_TERM_SESSIONS: dict[str, "_TerminalSession"] = {}
+
+
+class _TerminalClient:
+    """Output queue for one WebSocket viewer attached to a terminal session."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=512)
+
+    def send(self, data: bytes | None) -> None:
+        """Queue output (or None = session ended) without blocking the PTY reader."""
+        if self.queue.full():
+            # Slow client: drop the oldest chunk to keep the session responsive.
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self.queue.put_nowait(data)
+        except asyncio.QueueFull:
+            pass
+
+
+class _TerminalSession:
+    """A PTY-backed shell that survives WebSocket disconnects."""
+
+    def __init__(self, session_id: str, pid: int, master_fd: int,
+                 cols: int = _TERM_DEFAULT_COLS, rows: int = _TERM_DEFAULT_ROWS) -> None:
+        self.id = session_id
+        self.pid = pid
+        self.master_fd = master_fd
+        self.cols = cols
+        self.rows = rows
+        self.buffer = bytearray()
+        self.clients: set[_TerminalClient] = set()
+        self.lock = asyncio.Lock()
+        self.alive = True
+        self.reader_task: asyncio.Task | None = None
+
+    async def read_loop(self) -> None:
+        """Continuously drain the PTY, buffering output for reconnects."""
+        loop = asyncio.get_running_loop()
+        readable: asyncio.Future | None = None
+
+        def _on_readable() -> None:
+            if readable is not None and not readable.done():
+                readable.set_result(None)
+
+        try:
+            loop.add_reader(self.master_fd, _on_readable)
+            while True:
+                readable = loop.create_future()
+                await readable
+                readable = None
+                try:
+                    data = os.read(self.master_fd, 4096)
+                except (OSError, BlockingIOError):
+                    break
+                if not data:
+                    break
+                async with self.lock:
+                    if not self.alive:
+                        break
+                    self.buffer.extend(data)
+                    if len(self.buffer) > _TERM_BUFFER_LIMIT:
+                        del self.buffer[:-_TERM_BUFFER_LIMIT]
+                    for client in list(self.clients):
+                        client.send(data)
+        finally:
+            try:
+                loop.remove_reader(self.master_fd)
+            except (OSError, ValueError):
+                pass
+            await self.finish()
+
+    async def finish(self) -> None:
+        """Mark the session dead and release resources (idempotent)."""
+        async with self.lock:
+            if not self.alive:
+                return
+            self.alive = False
+            clients = list(self.clients)
+            self.clients.clear()
+
+        if _TERM_SESSIONS.get(self.id) is self:
+            _TERM_SESSIONS.pop(self.id, None)
+
+        try:
+            os.close(self.master_fd)
+        except OSError:
+            pass
+
+        for client in clients:
+            client.send(None)
+
+        try:
+            os.waitpid(self.pid, os.WNOHANG)
+        except (OSError, ChildProcessError):
+            pass
+
+    def resize(self, cols: int, rows: int) -> None:
+        self.cols = max(1, min(cols, 1000))
+        self.rows = max(1, min(rows, 1000))
+        if not self.alive:
+            return
+        try:
+            winsize = struct.pack("HHHH", self.rows, self.cols, 0, 0)
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        except OSError:
+            pass
+
+    def _descendant_pids(self) -> list[int]:
+        """Shell + all of its descendants (foreground jobs are separate groups)."""
+        pids: list[int] = []
+        try:
+            proc = psutil.Process(self.pid)
+            pids.extend(child.pid for child in proc.children(recursive=True))
+        except (psutil.Error, OSError):
+            pass
+        pids.append(self.pid)
+        return pids
+
+    def terminate(self) -> None:
+        """Kill the shell and all commands started in it, then let read_loop clean up."""
+        _TERM_SESSIONS.pop(self.id, None)
+        if not self.alive:
+            return
+        targets = self._descendant_pids()
+        signalled = False
+        for pid in targets:
+            try:
+                os.kill(pid, signal.SIGHUP)
+                signalled = True
+            except OSError:
+                pass
+        if not signalled:
+            return
+        asyncio.create_task(self._force_kill(targets))
+
+    async def _force_kill(self, targets: list[int]) -> None:
+        # Escalate if the shell or a job ignores SIGHUP.
+        for sig, delay in ((signal.SIGTERM, 0.5), (signal.SIGKILL, 1.0)):
+            await asyncio.sleep(delay)
+            if not self.alive:
+                return
+            for pid in targets:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+
+
+def _create_terminal_session(session_id: str, cwd: str) -> _TerminalSession:
+    """Fork a new PTY shell and register it in the session table."""
     target_user, target_home, target_shell = get_primary_user()
-    is_root = os.getuid() == 0
-    cur_user_name = pwd.getpwuid(os.getuid()).pw_name
     env = _build_term_env(target_user, target_home, target_shell)
     start_dir = _sanitize_cwd(cwd)
 
@@ -839,73 +992,127 @@ async def websocket_terminal(websocket: WebSocket, cwd: str = ""):
             os.execlp(target_shell, target_shell, "-l")
         sys.exit(1)
 
+    session = _TerminalSession(session_id, pid, master_fd)
+    session.resize(_TERM_DEFAULT_COLS, _TERM_DEFAULT_ROWS)
+    _TERM_SESSIONS[session_id] = session
+    session.reader_task = asyncio.create_task(session.read_loop())
+    return session
 
-    # Parent process
+
+@app.websocket("/ws/terminal")
+async def websocket_terminal(websocket: WebSocket, session: str = "", cwd: str = ""):
+    """WebSocket viewer for a persistent PTY terminal session.
+
+    The shell itself is owned by the server, keyed by `session` (normally a
+    random id stored in the browser's localStorage). Closing the browser only
+    detaches the viewer; output is buffered and the shell keeps running.
+    Reconnecting with the same id replays the recent buffer and resumes it.
+    Optional `cwd` is used only when a new session is created.
+    """
+    await websocket.accept()
+
+    sid = (session or "").strip()
+    if not _TERM_SESSION_RE.match(sid):
+        sid = uuid.uuid4().hex
+
+    # Attach to the existing session, or create one if it is gone/dead.
+    for _ in range(2):
+        sess = _TERM_SESSIONS.get(sid)
+        if sess is not None and not sess.alive:
+            _TERM_SESSIONS.pop(sid, None)
+            sess = None
+        if sess is None:
+            sess = _create_terminal_session(sid, cwd)
+            resumed = False
+        else:
+            resumed = True
+        async with sess.lock:
+            if not sess.alive:
+                continue
+            client = _TerminalClient()
+            sess.clients.add(client)
+            replay = bytes(sess.buffer)
+            if replay:
+                client.send(replay)
+            break
+    else:
+        await websocket.close(code=1011)
+        return
+
     try:
-        winsize = struct.pack("HHHH", 30, 120, 0, 0)
-        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-    except OSError:
-        pass
+        await websocket.send_text(json.dumps(
+            {"type": "session", "id": sid, "resumed": resumed},
+            ensure_ascii=False,
+        ))
+    except Exception:
+        async with sess.lock:
+            sess.clients.discard(client)
+        return
 
-    loop = asyncio.get_running_loop()
+    async def writer() -> None:
+        while True:
+            data = await client.queue.get()
+            if data is None:
+                await websocket.send_text(json.dumps({"type": "exit"}))
+                return
+            await websocket.send_text(json.dumps(
+                {"type": "output", "data": data.decode("utf-8", errors="replace")},
+                ensure_ascii=False,
+            ))
 
-    async def pty_to_ws():
+    async def reader() -> None:
+        while True:
+            msg = await websocket.receive_text()
+            try:
+                data = json.loads(msg)
+                msg_type = data.get("type")
+                if msg_type == "input":
+                    inp_data = data.get("data", "")
+                    if sess.alive:
+                        os.write(sess.master_fd, inp_data.encode("utf-8"))
+                elif msg_type == "resize":
+                    cols = int(data.get("cols", _TERM_DEFAULT_COLS))
+                    rows = int(data.get("rows", _TERM_DEFAULT_ROWS))
+                    sess.resize(cols, rows)
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+
+    task_writer = asyncio.create_task(writer())
+    task_reader = asyncio.create_task(reader())
+
+    try:
+        done, _ = await asyncio.wait(
+            [task_writer, task_reader],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            if not task.cancelled():
+                task.exception()  # mark retrieved to avoid noisy asyncio warnings
+    finally:
+        for task in (task_writer, task_reader):
+            task.cancel()
+        async with sess.lock:
+            sess.clients.discard(client)
         try:
-            while True:
-                data = await loop.run_in_executor(None, os.read, master_fd, 4096)
-                if not data:
-                    break
-                await websocket.send_text(data.decode("utf-8", errors="replace"))
+            await websocket.close()
         except Exception:
             pass
+        # Detach only: never kill the shell here. It keeps running headless.
 
-    async def ws_to_pty():
-        try:
-            while True:
-                msg = await websocket.receive_text()
-                try:
-                    data = json.loads(msg)
-                    msg_type = data.get("type")
-                    if msg_type == "input":
-                        inp_data = data.get("data", "")
-                        os.write(master_fd, inp_data.encode("utf-8"))
-                    elif msg_type == "resize":
-                        cols = int(data.get("cols", 120))
-                        rows = int(data.get("rows", 30))
-                        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-                except (json.JSONDecodeError, OSError):
-                    pass
-        except (WebSocketDisconnect, Exception):
-            pass
 
-    task_pty = asyncio.create_task(pty_to_ws())
-    task_ws = asyncio.create_task(ws_to_pty())
+@app.post("/api/terminal/kill")
+async def terminal_kill(req: Request):
+    """Terminate a persistent terminal session by id."""
+    data = await _get_json(req)
+    sid = str(data.get("session") or "").strip()
+    if not _TERM_SESSION_RE.match(sid):
+        raise HTTPException(status_code=400, detail="invalid session id")
 
-    done, pending = await asyncio.wait(
-        [task_pty, task_ws],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-
-    for task in pending:
-        task.cancel()
-
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
-
-    try:
-        os.kill(pid, signal.SIGHUP)
-        await asyncio.sleep(0.05)
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
-
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except (OSError, ChildProcessError):
-        pass
+    sess = _TERM_SESSIONS.pop(sid, None)
+    if sess is None:
+        return {"success": True, "message": "セッションは既に終了しています"}
+    sess.terminate()
+    return {"success": True, "message": "セッションを終了しました"}
 
 
 # ============================================================

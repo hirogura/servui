@@ -8,6 +8,10 @@ let refreshInterval = null;
 let wifiStatusData = null;
 let selectedWifiNetwork = null;
 let pendingTerminalCwd = null;
+let terminalExitNotified = false;
+
+const TERM_SESSION_KEY = 'servui_terminal_session';
+const TERM_SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 // --- Tab Navigation ---
 const EXTERNAL_TABS = new Set(['selfex', 'selfcode', 'easylxd', 'vmmanager', 'diskmanager']);
@@ -653,7 +657,46 @@ async function autoremovePackages() {
 }
 
 // --- Terminal ---
-function openTerminalAt(path) {
+// The shell lives on the server and is keyed by a random id kept in
+// localStorage. Closing the browser only detaches this viewer; the command
+// keeps running and reconnecting replays the recent output.
+function makeTerminalSessionId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getTerminalSessionId() {
+  let id = null;
+  try { id = localStorage.getItem(TERM_SESSION_KEY); } catch (e) {}
+  if (!id || !TERM_SESSION_RE.test(id)) {
+    id = makeTerminalSessionId();
+    try { localStorage.setItem(TERM_SESSION_KEY, id); } catch (e) {}
+  }
+  return id;
+}
+
+function resetTerminalSessionId() {
+  try { localStorage.removeItem(TERM_SESSION_KEY); } catch (e) {}
+}
+
+async function killTerminalSession(id) {
+  if (!id || !TERM_SESSION_RE.test(id)) return;
+  try {
+    await fetch('/api/terminal/kill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: id }),
+    });
+  } catch (e) {}
+}
+
+function setTerminalButtonState(connected) {
+  const label = document.getElementById('terminal-connect-text');
+  if (label) label.textContent = connected ? '切断' : '接続';
+}
+
+async function openTerminalAt(path) {
   if (!path) return;
   pendingTerminalCwd = path;
   const cwdLabel = document.getElementById('terminal-cwd-label');
@@ -664,11 +707,33 @@ function openTerminalAt(path) {
     try { ws.close(); } catch (e) {}
     ws = null;
   }
+  // A directory jump starts a fresh shell, so end the previous session.
+  let oldId = null;
+  try { oldId = localStorage.getItem(TERM_SESSION_KEY); } catch (e) {}
+  if (oldId) await killTerminalSession(oldId);
+  resetTerminalSessionId();
   switchTab('terminal');
 }
 
+async function restartTerminalSession() {
+  if (!confirm('現在のターミナルセッションを終了して、新しいシェルを開始しますか？\n実行中の処理も停止します。')) {
+    return;
+  }
+  const oldId = getTerminalSessionId();
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  await killTerminalSession(oldId);
+  resetTerminalSessionId();
+  pendingTerminalCwd = null;
+  connectTerminal();
+}
+
 function connectTerminal() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     ws.close();
     return;
   }
@@ -679,6 +744,8 @@ function connectTerminal() {
   if (term) {
     term.dispose();
   }
+
+  terminalExitNotified = false;
 
   term = new Terminal({
     cursorBlink: true,
@@ -706,15 +773,17 @@ function connectTerminal() {
   setTimeout(() => fitAddon.fit(), 50);
 
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const cwdParam = pendingTerminalCwd ? `?cwd=${encodeURIComponent(pendingTerminalCwd)}` : '';
+  const params = new URLSearchParams({ session: getTerminalSessionId() });
+  if (pendingTerminalCwd) params.set('cwd', pendingTerminalCwd);
   const cwdLabel = document.getElementById('terminal-cwd-label');
   if (cwdLabel) {
     cwdLabel.textContent = pendingTerminalCwd ? `— ${pendingTerminalCwd} で開いています` : '';
   }
   pendingTerminalCwd = null;
-  ws = new WebSocket(`${protocol}://${location.host}/ws/terminal${cwdParam}`);
+  ws = new WebSocket(`${protocol}://${location.host}/ws/terminal?${params.toString()}`);
 
   ws.onopen = () => {
+    setTerminalButtonState(true);
     term.writeln('\x1b[36m接続中...\x1b[0m\r\n');
     ws.send(JSON.stringify({
       type: 'resize',
@@ -724,11 +793,32 @@ function connectTerminal() {
   };
 
   ws.onmessage = (event) => {
-    term.write(event.data);
+    let msg = null;
+    try { msg = JSON.parse(event.data); } catch (e) {}
+    if (!msg || typeof msg !== 'object') {
+      // Backward-compatible fallback for raw terminal output.
+      term.write(event.data);
+      return;
+    }
+    if (msg.type === 'session') {
+      if (msg.resumed) {
+        term.writeln('\x1b[36m前回のセッションに再接続しました（バックグラウンドで継続中）\x1b[0m\r\n');
+      } else {
+        term.writeln('\x1b[36m新しいセッションを開始しました。ブラウザを閉じても処理は継続します。\x1b[0m\r\n');
+      }
+    } else if (msg.type === 'output') {
+      term.write(msg.data || '');
+    } else if (msg.type === 'exit') {
+      terminalExitNotified = true;
+      term.writeln('\r\n\x1b[33mシェルが終了しました。次回接続時に新しいセッションを開始します。\x1b[0m');
+    }
   };
 
   ws.onclose = () => {
-    term.writeln('\r\n\x1b[31m接続が閉じました。再接続するには「接続」ボタンを押してください。\x1b[0m');
+    setTerminalButtonState(false);
+    if (!terminalExitNotified) {
+      term.writeln('\r\n\x1b[33m切断しました。シェルはサーバー上で継続しています。「接続」で再開できます。\x1b[0m');
+    }
   };
 
   ws.onerror = (e) => {
