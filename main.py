@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="3.1.0")
+app = FastAPI(title="serv-UI", version="3.1.1")
 
 
 @app.middleware("http")
@@ -3230,16 +3230,19 @@ async def lid_switch_set(req: Request):
 # --- 8.7 Bing壁紙 (1日1回 Bing の今日の画像で GNOME 壁紙を更新) ---
 # Snap 版 BingWall は動作が重いため、cron + シェルスクリプトで軽量に実現する。
 # リポジトリ同梱の bing-wallpaper.sh を /usr/local/bin へ置き、
-# /etc/cron.d/bing-wallpaper で 1日1回 root として実行する。
+# /etc/cron.d/bing-wallpaper で毎日 07:30 と PC 起動時 (@reboot) に root として実行する。
+# スクリプト側で本日分の取得済みを判定するため、1日1回取得は維持される。
 BING_WP_REPO_SCRIPT = str(BASE_DIR / "bing-wallpaper.sh")
 BING_WP_SCRIPT = "/usr/local/bin/bing-wallpaper"
 BING_WP_CRON = "/etc/cron.d/bing-wallpaper"
 BING_WP_CRON_CONTENT = (
-    "# /etc/cron.d/bing-wallpaper -- serv-UI が管理しています (v.2.9.3)\n"
-    "# 1日1回 Bing の今日の画像を取得し GNOME のデスクトップ壁紙に設定します\n"
+    "# /etc/cron.d/bing-wallpaper -- serv-UI が管理しています (v.3.1.1)\n"
+    "# 毎日 07:30 と PC 起動時に Bing の今日の画像を取得し GNOME のデスクトップ壁紙に設定します\n"
+    "# (その日の画像を取得済みの場合はスクリプト側でダウンロードをスキップします)\n"
     "SHELL=/bin/bash\n"
     "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n"
     "30 7 * * * root /usr/local/bin/bing-wallpaper\n"
+    "@reboot root /usr/local/bin/bing-wallpaper\n"
 )
 
 
@@ -3254,10 +3257,28 @@ async def _bing_wp_status() -> dict:
         pass
     enabled = BING_WP_SCRIPT in cron_text
     script_installed = os.path.isfile(BING_WP_SCRIPT) and os.access(BING_WP_SCRIPT, os.X_OK)
-    if not script_installed and os.path.isfile(BING_WP_REPO_SCRIPT):
-        # 同梱スクリプトがまだ導入されていない場合はこの場で導入する
+
+    # 同梱スクリプトが未導入、または更新されている場合は最新版を導入する
+    needs_script_install = not script_installed
+    if not needs_script_install and os.path.isfile(BING_WP_REPO_SCRIPT):
+        try:
+            with open(BING_WP_REPO_SCRIPT, "rb") as f_repo, open(BING_WP_SCRIPT, "rb") as f_inst:
+                needs_script_install = f_repo.read() != f_inst.read()
+        except OSError:
+            needs_script_install = True
+    if needs_script_install and os.path.isfile(BING_WP_REPO_SCRIPT):
         r = await run_cmd(_sudo(f"install -m 0755 '{BING_WP_REPO_SCRIPT}' '{BING_WP_SCRIPT}'"), timeout=30)
         script_installed = r["returncode"] == 0 and os.path.isfile(BING_WP_SCRIPT)
+
+    # 旧バージョンで登録された cron 定義 (起動時取得なし) を最新へ更新する
+    if enabled and cron_text != BING_WP_CRON_CONTENT:
+        r = await run_cmd(
+            f"{_sudo('mkdir -p /etc/cron.d')}"
+            f" && printf %s {shlex.quote(BING_WP_CRON_CONTENT)} | {_sudo('tee ' + shlex.quote(BING_WP_CRON))} >/dev/null",
+            timeout=30,
+        )
+        if r["returncode"] == 0:
+            cron_text = BING_WP_CRON_CONTENT
 
     img_file = os.path.join(home, ".cache/bing-wallpaper/bing.jpg")
     info_file = os.path.join(home, ".cache/bing-wallpaper/info.txt")
@@ -3302,7 +3323,7 @@ async def _bing_wp_status() -> dict:
     if not current_uri and img_exists and enabled:
         current_uri = f"file://{img_file}"
 
-    detail = "有効 (毎日 07:30 に Bing の画像を壁紙に設定)" if enabled else "無効 (cron 未登録)"
+    detail = "有効 (毎日 07:30 と PC 起動時に、その日の画像を未取得なら取得して壁紙に設定)" if enabled else "無効 (cron 未登録)"
     return {
         "enabled": enabled,
         "script_installed": script_installed,
@@ -3344,7 +3365,7 @@ async def bing_wallpaper_set(req: Request):
             return {"success": False,
                     "message": "cron 登録に失敗しました: " + (r["stderr"] or r["stdout"]).strip()[:300],
                     **await _bing_wp_status()}
-        msg = "有効にしました。毎日 07:30 に Bing の画像を壁紙に設定します。"
+        msg = "有効にしました。毎日 07:30 と PC 起動時に、その日の画像を未取得なら取得して壁紙に設定します。"
     else:
         r = await run_cmd(_sudo(f"rm -f {shlex.quote(BING_WP_CRON)}"), timeout=30)
         if r["returncode"] != 0:
@@ -3361,7 +3382,8 @@ async def bing_wallpaper_run():
     username, _home, _shell = get_primary_user()
     if not username:
         return {"success": False, "message": "対象ユーザーを特定できませんでした"}
-    r = await run_cmd(BING_WP_SCRIPT, timeout=300)
+    # 手動実行では本日分を取得済みでも強制的に再取得する
+    r = await run_cmd(f"{BING_WP_SCRIPT} --force", timeout=420)
     out = (r["stdout"] or "").strip()
     ok = r["returncode"] == 0 and (out.startswith("ok:") or out.startswith("warn:"))
     if r["returncode"] != 0 and not out:

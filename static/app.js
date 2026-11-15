@@ -2779,6 +2779,7 @@ async function loadBingWallpaper() {
     if (data.current_uri) lines.push(`設定中: ${data.current_uri}`);
     if (data.img_copyright) lines.push(`© ${data.img_copyright}`);
     lines.push(`cron: ${data.enabled ? '登録済み (/etc/cron.d/bing-wallpaper)' : '未登録'}`);
+    if (data.enabled) lines.push('取得: 毎日 07:30 と PC 起動時 (本日分が未取得の場合)');
     detail.innerHTML = lines.map(escapeHtml).join('<br>');
     el.innerHTML = data.enabled
       ? '<span class="badge badge-active">有効</span>'

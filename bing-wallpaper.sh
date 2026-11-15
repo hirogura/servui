@@ -1,15 +1,28 @@
 #!/bin/bash
 # ============================================================
-# bing-wallpaper: 1日1回 Bing の今日の画像を取得し、
+# bing-wallpaper: Bing の今日の画像を取得し、
 #                 GNOME のデスクトップ壁紙に設定する (Snap 不要)
 # ------------------------------------------------------------
-# /etc/cron.d/bing-wallpaper から root として毎日実行される。
-# 対象ユーザーは引数で指定できるが、省略時は UID>=1000 の
-# /home 配下ユーザーを自動検出する。
+# /etc/cron.d/bing-wallpaper から root として
+#   毎日 07:30 と PC 起動時 (@reboot) に実行される。
+# その日の画像を取得済みの場合はダウンロードをスキップし、
+# 壁紙の再適用だけを行う (1日1回取得を保証)。
+#
+# 引数:
+#   --force, -f  本日分を取得済みでも強制的に再取得する
+#   <username>   対象ユーザー (省略時は UID>=1000 の /home 配下ユーザー)
 # ============================================================
 set -u
 
-RUN_USER="${1:-}"
+RUN_USER=""
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force|-f) FORCE=1 ;;
+        *) RUN_USER="$arg" ;;
+    esac
+done
+
 if [ -z "$RUN_USER" ]; then
     RUN_USER="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65540 && $6 ~ /^\/home\// {print $1; exit}')"
 fi
@@ -24,12 +37,58 @@ IMG_FILE="$IMG_DIR/bing.jpg"
 METADATA_FILE="$IMG_DIR/info.txt"
 TMP_FILE="$IMG_DIR/bing.jpg.new"
 
+# 起動直後はユーザーセッション (D-Bus) がまだ無いことがあるため、
+# 壁紙設定時はこの秒数までセッションの立ち上がりを待つ。
+SESSION_WAIT="${BING_WP_SESSION_WAIT:-180}"
+
+today_jst() { TZ=Asia/Tokyo date '+%Y-%m-%d'; }
+
+# --- GNOME の壁紙に設定 (ユーザーのセッションバス経由) ---
+apply_wallpaper() {
+    if [ ! -d "/run/user/$RUN_UID" ] && [ "$SESSION_WAIT" -gt 0 ] 2>/dev/null; then
+        waited=0
+        while [ "$waited" -lt "$SESSION_WAIT" ]; do
+            sleep 2
+            waited=$((waited + 2))
+            [ -d "/run/user/$RUN_UID" ] && break
+        done
+    fi
+    if [ -d "/run/user/$RUN_UID" ]; then
+        local env_args=(
+            env
+            "XDG_RUNTIME_DIR=/run/user/$RUN_UID"
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$RUN_UID/bus"
+        )
+        sudo -u "$RUN_USER" "${env_args[@]}" gsettings set org.gnome.desktop.background picture-uri "file://$IMG_FILE" 2>/dev/null
+        sudo -u "$RUN_USER" "${env_args[@]}" gsettings set org.gnome.desktop.background picture-uri-dark "file://$IMG_FILE" 2>/dev/null
+        echo "ok: 壁紙を更新しました (ユーザー: $RUN_USER / 画像: $IMG_FILE)"
+    else
+        echo "warn: 画像は保存されましたが、ユーザーセッションがないため壁紙は更新されませんでした (/run/user/$RUN_UID 無し)"
+    fi
+}
+
 mkdir -p "$IMG_DIR"
 
-# --- Bing API で今日の画像情報を取得 ---
+# --- 本日分を取得済みならダウンロードをスキップ ---
+LAST_DATE=""
+if [ -f "$METADATA_FILE" ]; then
+    LAST_DATE="$(sed -n 's/^date: *\([0-9][0-9-]*\).*/\1/p' "$METADATA_FILE" | head -1)"
+fi
+if [ "$FORCE" -ne 1 ] && [ -s "$IMG_FILE" ] && [ "$LAST_DATE" = "$(today_jst)" ]; then
+    echo "skip: 本日分 ($LAST_DATE) は取得済みのためダウンロードを省略します"
+    apply_wallpaper
+    exit 0
+fi
+
+# --- Bing API で今日の画像情報を取得 (起動直後のネットワーク待ちも考慮して再試行) ---
 API='https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=ja-JP'
-JSON="$(curl -fsSL --max-time 30 "$API" 2>/dev/null)" || { echo "error: Bing API へのアクセスに失敗しました"; exit 1; }
-[ -n "$JSON" ] || { echo "error: Bing API の応答が空です"; exit 1; }
+JSON=""
+for attempt in $(seq 1 12); do
+    JSON="$(curl -fsSL --max-time 30 "$API" 2>/dev/null)" && [ -n "$JSON" ] && break
+    JSON=""
+    [ "$attempt" -lt 12 ] && sleep 5
+done
+[ -n "$JSON" ] || { echo "error: Bing API へのアクセスに失敗しました"; exit 1; }
 
 URL="$(printf '%s' "$JSON" | sed -n 's/.*"url" *: *"\([^"]*\)".*/\1/p' | head -1)"
 URLBASE="$(printf '%s' "$JSON" | sed -n 's/.*"urlbase" *: *"\([^"]*\)".*/\1/p' | head -1)"
@@ -61,18 +120,6 @@ mv -f "$TMP_FILE" "$IMG_FILE"
 } > "$METADATA_FILE"
 chown -R "$RUN_USER:$(id -g "$RUN_USER")" "$IMG_DIR" || true
 
-# --- GNOME の壁紙に設定 (ユーザーのセッションバス経由) ---
-RUN_USER_ENV=(
-    env
-    "XDG_RUNTIME_DIR=/run/user/$RUN_UID"
-    "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$RUN_UID/bus"
-)
-if [ -d "/run/user/$RUN_UID" ]; then
-    sudo -u "$RUN_USER" "${RUN_USER_ENV[@]}" gsettings set org.gnome.desktop.background picture-uri "file://$IMG_FILE" 2>/dev/null
-    sudo -u "$RUN_USER" "${RUN_USER_ENV[@]}" gsettings set org.gnome.desktop.background picture-uri-dark "file://$IMG_FILE" 2>/dev/null
-    echo "ok: 壁紙を更新しました (ユーザー: $RUN_USER / 画像: $IMG_FILE)"
-else
-    echo "warn: 画像は保存されましたが、ユーザーセッションがないため壁紙は更新されませんでした (/run/user/$RUN_UID 無し)"
-fi
+apply_wallpaper
 echo "title: $TITLE"
 echo "copyright: $COPYRIGHT"
