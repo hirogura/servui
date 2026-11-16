@@ -582,10 +582,18 @@ select:disabled {
 
 .terminal-header h1 { margin-bottom: 0; }
 
+/* ターミナル画面はウィンド下部まで領域を使い、できるだけ多く表示する */
+#tab-terminal.active {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 3.6rem); /* .content の上下 padding (1.8rem × 2) を差し引く */
+}
+
 #terminal-container {
   background: var(--bg-base);
   border-radius: var(--radius);
   padding: 0.4rem;
+  flex: 1;
   min-height: 480px;
   border: 1px solid var(--border);
 }
@@ -984,5 +992,6 @@ select:disabled {
   .logo-info, .nav-links li span, .btn-sidebar span { display: none; }
   .nav-links li, .btn-sidebar { justify-content: center; padding: 0.65rem; }
   .content { margin-left: 52px; padding: 1rem; }
+  #tab-terminal.active { height: calc(100vh - 2rem); }
   .stats-grid { grid-template-columns: 1fr 1fr; }
 }
