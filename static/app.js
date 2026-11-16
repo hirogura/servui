@@ -2882,6 +2882,70 @@ async function loadAppsStatus() {
   }
 }
 
+const CHROME_DEB_URL = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb";
+const EDGE_GPG_KEY = "https://packages.microsoft.com/keys/microsoft.asc";
+const EDGE_REPO_LIST = "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge/ stable main";
+
+function buildAppInstallScript(keys) {
+  const cmds = {
+    chrome: [
+      "echo '==> Google Chrome をインストールします'",
+      `curl -fsSL '${CHROME_DEB_URL}' -o /tmp/google-chrome-stable.deb && sudo apt-get install -y /tmp/google-chrome-stable.deb`
+    ],
+    edge: [
+      "echo '==> Microsoft Edge をインストールします'",
+      `curl -fsSL '${EDGE_GPG_KEY}' | gpg --dearmor --yes -o /tmp/microsoft-edge.gpg && sudo install -m 0644 /tmp/microsoft-edge.gpg /usr/share/keyrings/microsoft-edge.gpg && echo '${EDGE_REPO_LIST}' | sudo tee /etc/apt/sources.list.d/microsoft-edge.list >/dev/null && sudo apt-get update && sudo apt-get install -y microsoft-edge-stable`
+    ],
+    thunderbird: [
+      "echo '==> Thunderbird をインストールします'",
+      "sudo apt-get install -y thunderbird thunderbird-locale-ja"
+    ],
+    libreoffice: [
+      "echo '==> LibreOffice をインストールします'",
+      "sudo apt-get install -y libreoffice libreoffice-l10n-ja libreoffice-help-ja"
+    ],
+    vlc: [
+      "echo '==> VLC をインストールします'",
+      "sudo apt-get install -y vlc"
+    ],
+    ssh: [
+      "echo '==> SSH を設定します'",
+      "sudo apt-get install -y openssh-server && sudo systemctl enable --now ssh"
+    ],
+    bing_wall: [
+      "echo '==> BingWall をインストールします (snap)'",
+      "which snap >/dev/null 2>&1 || sudo apt-get install -y snapd && sudo snap install bing-wall"
+    ],
+  };
+
+  const lines = [
+    '#!/bin/bash',
+    'set -u',
+    'overall=0',
+    `echo "=== serv-UI アプリインストール開始: $(date) ==="`,
+    '',
+  ];
+  for (const key of keys) {
+    const label = (APPS_INSTALL_DEFS.find(d => d.key === key) || {}).label || key;
+    const steps = cmds[key];
+    if (!steps) continue;
+    lines.push(`echo ""`);
+    lines.push(`echo "----- ${label} -----"`);
+    lines.push('(');
+    for (const s of steps) lines.push(`  ${s}`);
+    lines.push(')');
+    lines.push('rc=$?');
+    lines.push(`if [ $rc -eq 0 ]; then echo "[OK] ${label}"; else echo "[NG] ${label} (exit=$rc)"; overall=1; fi`);
+  }
+  lines.push('');
+  lines.push(`echo ""`);
+  lines.push(`echo "=== 完了: $(date) ==="`);
+  lines.push('if [ $overall -eq 0 ]; then echo "結果: すべて成功しました"; else echo "結果: 一部失敗しました（上のログを確認してください）"; fi');
+  lines.push('echo "このウィンドウのアプリ一覧を更新するには「アプリ/設定」タブを再読み込みしてください。"');
+  lines.push('exit $overall');
+  return lines.join('\n');
+}
+
 async function installSelectedApps() {
   const checks = Array.from(document.querySelectorAll('.apps-install-check:checked'));
   if (checks.length === 0) {
@@ -2890,37 +2954,15 @@ async function installSelectedApps() {
   }
   const keys = checks.map(c => c.value);
   const labels = keys.map(k => (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k).join(', ');
-  if (!confirm(`以下のアプリをインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のダウンロード等)。完了までこのページを開いたままお待ちください。`)) return;
+  if (!confirm(`以下のアプリをターミナルでインストールしますか？\n\n${labels}\n\n時間がかかる場合があります (Chrome / Edge のダウンロード等)。ターミナルに移行して進捗を表示します。`)) return;
   const statusEl = document.getElementById('apps-install-status');
-  const btn = document.getElementById('btn-apps-install');
-  btn.disabled = true;
   statusEl.className = 'status-msg show info';
-  statusEl.innerHTML = '<span class="spinner"></span> インストール中... (数分かかる場合があります)';
-  try {
-    const resp = await fetch('/api/apps/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apps: keys }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    btn.disabled = false;
-    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-    const results = data.results || {};
-    const lines = keys.map(k => {
-      const r = results[k] || {};
-      const label = (APPS_INSTALL_DEFS.find(d => d.key === k) || {}).label || k;
-      return `${r.success ? '✅' : '❌'} ${label}`;
-    }).join('\n');
-    statusEl.className = `status-msg show ${data.success ? 'success' : 'error'}`;
-    statusEl.textContent = `${data.message || ''}\n${lines}`;
-    showStatus(data.message || 'インストールが完了しました', data.success ? 'success' : 'error');
-    loadAppsStatus();
-    loadAppsShortcuts();
-  } catch (e) {
-    btn.disabled = false;
-    statusEl.className = 'status-msg show error';
-    statusEl.textContent = `エラー: ${e.message}`;
-  }
+  statusEl.textContent = 'ターミナルに移行してインストールを開始します。進捗はターミナルで確認できます。完了後「アプリ/設定」タブを再読み込みしてください。';
+
+  const script = buildAppInstallScript(keys);
+  const b64 = btoa(unescape(encodeURIComponent(script)));
+  const cmd = `printf '%s' '${b64}' | base64 -d > /tmp/servui-app-install.sh && bash /tmp/servui-app-install.sh; rm -f /tmp/servui-app-install.sh`;
+  sendToTerminal(cmd, 'ターミナルでアプリのインストールを開始します');
 }
 
 // --- デスクトップショートカット ---

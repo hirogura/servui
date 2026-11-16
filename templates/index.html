@@ -17,7 +17,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-info">
-        <span class="logo-text">serv-UI<span class="logo-version">v.3.1.1</span></span>
+        <span class="logo-text">serv-UI<span class="logo-version">v.3.1.2</span></span>
         <span class="logo-hostname" id="sidebar-hostname">...</span>
       </div>
     </div>
@@ -652,11 +652,11 @@
 
       <h2>アプリのインストール</h2>
       <div class="stat-card" style="margin-bottom:1rem;">
-        <p class="muted" style="margin-bottom:0.75rem;">インストールしたいアプリにチェックを入れて「インストール」を押してください。Google Chrome / Microsoft Edge は公式の .deb パッケージを取得してインストールするため、時間がかかる場合があります。</p>
+        <p class="muted" style="margin-bottom:0.75rem;">インストールしたいアプリにチェックを入れて「ターミナルでインストール」を押してください（Google Chrome / Microsoft Edge は公式の .deb パッケージを取得してインストールするため、時間がかかる場合があります）。ターミナルに移行してインストール状況を表示します。</p>
         <div id="apps-install-list"></div>
         <div id="apps-install-status" class="status-msg"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:0.5rem;">
-          <button class="btn btn-primary" id="btn-apps-install" onclick="installSelectedApps()">インストール</button>
+          <button class="btn btn-primary" id="btn-apps-install" onclick="installSelectedApps()">ターミナルでインストール</button>
         </div>
       </div>
 
@@ -778,6 +778,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=37"></script>
+  <script src="/static/app.js?v=38"></script>
 </body>
 </html>
