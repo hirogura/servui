@@ -726,6 +726,38 @@ async function restartTerminalSession() {
   connectTerminal();
 }
 
+async function endTerminalSession() {
+  if (!confirm('現在のターミナルセッションを終了しますか？\n実行中の処理も停止します。')) {
+    return;
+  }
+  const oldId = getTerminalSessionId();
+  if (ws) {
+    // 終了通知を表示しないようハンドラを外してから切断する
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  await killTerminalSession(oldId);
+  resetTerminalSessionId();
+  pendingTerminalCwd = null;
+  terminalExitNotified = true;
+  setTerminalButtonState(false);
+  const cwdLabel = document.getElementById('terminal-cwd-label');
+  if (cwdLabel) cwdLabel.textContent = '';
+  if (term) {
+    term.clear();
+    term.writeln('\r\n\x1b[33mセッションを終了しました。「接続」で新しいセッションを開始できます。\x1b[0m');
+  }
+}
+
+function clearTerminal() {
+  if (!term) return;
+  term.clear();
+  term.focus();
+}
+
 function connectTerminal() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     ws.close();
