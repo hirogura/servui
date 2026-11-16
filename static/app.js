@@ -59,9 +59,8 @@ function switchTab(tab) {
   }
 }
 
-function refreshCurrentTab() {
-  switchTab(currentTab);
-}
+// 「serv-UIリフレッシュ」ボタンは location.reload() (ブラウザリロード) で新版の
+// HTML/app.js も確実に再取得する。そのためこの関数は廃止した。
 
 async function restartServUI(auto = false) {
   // auto=true の場合は確認ダイアログを出さずに再起動する (アップデート完了後の自動連携用)
@@ -117,12 +116,7 @@ async function autoRestartAndRefreshAfterUpdate() {
     setTimeout(() => location.reload(), 2000);
     return;
   }
-  showStatus('再起動完了！自動で「serv-UIリフレッシュ」を実行します', 'success');
-  try {
-    refreshCurrentTab();
-  } catch (e) {
-    console.error('Auto refresh error:', e);
-  }
+  showStatus('再起動完了！ページを再読み込みします', 'success');
   // 新版の app.js/index.html を確実に取得するためリロードする
   setTimeout(() => location.reload(), 1000);
 }

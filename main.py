@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 IS_ROOT = os.getuid() == 0
 
-app = FastAPI(title="serv-UI", version="3.1.2")
+app = FastAPI(title="serv-UI", version="3.1.3")
 
 
 @app.middleware("http")
